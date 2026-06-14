@@ -6,6 +6,10 @@ export const SettingsService = {
     const { data } = await apiClient.get('/restaurants/me');
     return data;
   },
+  getFullRestaurant: async (id: string) => {
+    const { data } = await apiClient.get(`/restaurants/${id}/full`);
+    return data;
+  },
   updateOwnRestaurant: async (payload: any) => {
     const { data } = await apiClient.patch('/restaurants/me', payload);
     return data;

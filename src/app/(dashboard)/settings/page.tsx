@@ -1,16 +1,29 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { Loader2, Save, Trash2, Plus } from 'lucide-react';
+import { Loader2, Save, Trash2, Plus, MapPin } from 'lucide-react';
 import { SettingsService } from '@/services/api/settings';
+import dynamic from 'next/dynamic';
+
+const DeliveryZoneMap = dynamic(() => import('@/components/DeliveryZoneMap'), {
+  ssr: false,
+  loading: () => (
+    <div style={{ height: '500px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-elevated)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+      <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
+    </div>
+  )
+});
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [activeTab, setActiveTab] = useState<'profile' | 'exchange'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'exchange' | 'delivery'>('profile');
 
   // Profile State
   const [profile, setProfile] = useState<any>(null);
+  const [deliveryPolygon, setDeliveryPolygon] = useState<any[]>([]);
+  const [isFetchingPolygon, setIsFetchingPolygon] = useState(false);
+  const [polygonFetched, setPolygonFetched] = useState(false);
 
   // Exchange Rates State
   const [exchangeRates, setExchangeRates] = useState<any[]>([]);
@@ -20,6 +33,27 @@ export default function SettingsPage() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'delivery' && profile?.id && !polygonFetched && !isFetchingPolygon) {
+      fetchPolygon(profile.id);
+    }
+  }, [activeTab, profile]);
+
+  const fetchPolygon = async (id: string) => {
+    setIsFetchingPolygon(true);
+    try {
+      const fullData = await SettingsService.getFullRestaurant(id);
+      if (fullData?.deliveryZones && fullData.deliveryZones.length > 0) {
+        setDeliveryPolygon(fullData.deliveryZones[0].polygon || []);
+      }
+      setPolygonFetched(true);
+    } catch (e) {
+      console.error('Failed to fetch polygon data', e);
+    } finally {
+      setIsFetchingPolygon(false);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -139,6 +173,17 @@ export default function SettingsPage() {
         >
           Exchange Rates
         </button>
+        <button 
+          onClick={() => setActiveTab('delivery')}
+          style={{ 
+            background: 'none', border: 'none', fontSize: '16px', fontWeight: '600', cursor: 'pointer',
+            color: activeTab === 'delivery' ? 'var(--accent-primary)' : 'var(--text-secondary)',
+            borderBottom: activeTab === 'delivery' ? '2px solid var(--accent-primary)' : 'none',
+            paddingBottom: '8px'
+          }}
+        >
+          Delivery Zone
+        </button>
       </div>
 
       {activeTab === 'profile' && profile && (
@@ -236,6 +281,27 @@ export default function SettingsPage() {
                 <Plus size={18} /> Add Rate
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'delivery' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '800px', width: '100%' }}>
+          <div className="glass-panel" style={{ padding: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <MapPin size={24} color="var(--accent-primary)" />
+              <h3 style={{ fontSize: '18px', fontWeight: '600' }}>Delivery Zone</h3>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '24px' }}>
+              This is the geographic area where your restaurant accepts delivery orders. If a customer places an order from outside this zone, it will be rejected automatically.
+            </p>
+            {isFetchingPolygon ? (
+              <div style={{ height: '500px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-elevated)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
+              </div>
+            ) : (
+              <DeliveryZoneMap polygon={deliveryPolygon} />
+            )}
           </div>
         </div>
       )}
