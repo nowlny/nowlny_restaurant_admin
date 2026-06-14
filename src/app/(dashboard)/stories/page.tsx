@@ -63,7 +63,7 @@ export default function StoriesPage() {
 
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+      <header className="responsive-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <h1 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>Stories</h1>
           <p style={{ color: 'var(--text-secondary)' }}>Engage customers with active stories.</p>

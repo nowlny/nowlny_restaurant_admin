@@ -16,6 +16,7 @@ export default function OrdersPage() {
   const [rejectReason, setRejectReason] = useState('');
   
   const [draggedOverStatus, setDraggedOverStatus] = useState<string | null>(null);
+  const [activeMobileTab, setActiveMobileTab] = useState<string>('pending');
 
   const handleDragOver = (e: React.DragEvent, status: string) => {
     e.preventDefault();
@@ -248,17 +249,47 @@ export default function OrdersPage() {
           <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
         </div>
       ) : (
-        <div className="kanban-grid" style={{ 
-          display: 'grid', 
-          gridTemplateColumns: 'repeat(4, 1fr)', 
-          gap: '16px', 
-          flex: 1, 
-          overflow: 'hidden',
-          paddingBottom: '16px'
-        }}>
+        <>
+          {/* Mobile Tab Navigation */}
+          <div className="mobile-only" style={{ display: 'none', gap: '8px', overflowX: 'auto', width: '100%', paddingBottom: '12px', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', scrollbarWidth: 'none' }}>
+            <button 
+              onClick={() => setActiveMobileTab('pending')}
+              style={{ flexShrink: 0, padding: '8px 16px', borderRadius: '20px', whiteSpace: 'nowrap', fontSize: '14px', fontWeight: '600', backgroundColor: activeMobileTab === 'pending' ? 'var(--warning)' : 'var(--bg-elevated)', color: activeMobileTab === 'pending' ? 'white' : 'var(--text-secondary)', border: 'none' }}
+            >
+              Pending ({pendingOrders.length})
+            </button>
+            <button 
+              onClick={() => setActiveMobileTab('confirmed')}
+              style={{ flexShrink: 0, padding: '8px 16px', borderRadius: '20px', whiteSpace: 'nowrap', fontSize: '14px', fontWeight: '600', backgroundColor: activeMobileTab === 'confirmed' ? '#3b82f6' : 'var(--bg-elevated)', color: activeMobileTab === 'confirmed' ? 'white' : 'var(--text-secondary)', border: 'none' }}
+            >
+              Preparing ({confirmedOrders.length})
+            </button>
+            <button 
+              onClick={() => setActiveMobileTab('out_for_delivery')}
+              style={{ flexShrink: 0, padding: '8px 16px', borderRadius: '20px', whiteSpace: 'nowrap', fontSize: '14px', fontWeight: '600', backgroundColor: activeMobileTab === 'out_for_delivery' ? '#a855f7' : 'var(--bg-elevated)', color: activeMobileTab === 'out_for_delivery' ? 'white' : 'var(--text-secondary)', border: 'none' }}
+            >
+              Delivery ({outOrders.length})
+            </button>
+            <button 
+              onClick={() => setActiveMobileTab('delivered')}
+              style={{ flexShrink: 0, padding: '8px 16px', borderRadius: '20px', whiteSpace: 'nowrap', fontSize: '14px', fontWeight: '600', backgroundColor: activeMobileTab === 'delivered' ? 'var(--success)' : 'var(--bg-elevated)', color: activeMobileTab === 'delivered' ? 'white' : 'var(--text-secondary)', border: 'none' }}
+            >
+              Delivered ({deliveredOrders.length})
+            </button>
+          </div>
+
+          <div className="kanban-grid" style={{ 
+            display: 'grid', 
+            gridTemplateColumns: 'repeat(4, 1fr)', 
+            gap: '16px', 
+            flex: 1, 
+            overflow: 'hidden',
+            paddingBottom: '16px'
+          }}>
           {/* COLUMN 1: PENDING */}
           <div 
-            className="kanban-column" 
+            className={`kanban-column ${activeMobileTab === 'pending' ? 'active-mobile-tab' : ''}`}
+
             onDragOver={(e) => handleDragOver(e, 'pending')}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, 'pending')}
@@ -286,7 +317,8 @@ export default function OrdersPage() {
 
           {/* COLUMN 2: CONFIRMED */}
           <div 
-            className="kanban-column" 
+            className={`kanban-column ${activeMobileTab === 'confirmed' ? 'active-mobile-tab' : ''}`}
+
             onDragOver={(e) => handleDragOver(e, 'confirmed')}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, 'confirmed')}
@@ -314,7 +346,8 @@ export default function OrdersPage() {
 
           {/* COLUMN 3: OUT FOR DELIVERY */}
           <div 
-            className="kanban-column" 
+            className={`kanban-column ${activeMobileTab === 'out_for_delivery' ? 'active-mobile-tab' : ''}`}
+
             onDragOver={(e) => handleDragOver(e, 'out_for_delivery')}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, 'out_for_delivery')}
@@ -342,7 +375,8 @@ export default function OrdersPage() {
 
           {/* COLUMN 4: DELIVERED */}
           <div 
-            className="kanban-column" 
+            className={`kanban-column ${activeMobileTab === 'delivered' ? 'active-mobile-tab' : ''}`}
+
             onDragOver={(e) => handleDragOver(e, 'delivered')}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, 'delivered')}
@@ -362,7 +396,8 @@ export default function OrdersPage() {
               )))}
             </div>
           </div>
-        </div>
+          </div>
+        </>
       )}
 
       {/* Order Details Modal Overlay */}

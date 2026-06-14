@@ -109,9 +109,11 @@ export default function SettingsPage() {
 
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      <header>
-        <h1 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>Settings</h1>
-        <p style={{ color: 'var(--text-secondary)' }}>Manage your restaurant profile and exchange rates.</p>
+      <header className="responsive-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <h1 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>Settings</h1>
+          <p style={{ color: 'var(--text-secondary)' }}>Manage your restaurant profile and exchange rates.</p>
+        </div>
       </header>
 
       <div style={{ display: 'flex', gap: '24px', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px' }}>
@@ -141,7 +143,7 @@ export default function SettingsPage() {
 
       {activeTab === 'profile' && profile && (
         <form onSubmit={handleProfileSave} className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+          <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Restaurant Name</label>
               <input type="text" className="form-input" value={profile.name || ''} onChange={e => setProfile({ ...profile, name: e.target.value })} required />
@@ -157,7 +159,7 @@ export default function SettingsPage() {
             <textarea className="form-input" rows={3} value={profile.description || ''} onChange={e => setProfile({ ...profile, description: e.target.value })} />
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+          <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Logo URL</label>
               <input type="url" className="form-input" value={profile.logo || ''} onChange={e => setProfile({ ...profile, logo: e.target.value })} />
@@ -168,7 +170,7 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
+          <div className="responsive-grid-3" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Delivery Fee</label>
               <input type="number" step="0.01" className="form-input" value={profile.deliveryFee || 0} onChange={e => setProfile({ ...profile, deliveryFee: e.target.value })} />
@@ -213,25 +215,25 @@ export default function SettingsPage() {
             )}
             
             <h4 style={{ fontSize: '16px', fontWeight: '600', marginBottom: '12px', paddingTop: '16px', borderTop: '1px solid var(--border-color)' }}>Add New Rate Override</h4>
-            <form onSubmit={handleAddExchangeRate} style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
-              <div style={{ flex: 1 }}>
+            <form onSubmit={handleAddExchangeRate} className="flex-col-mobile" style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+              <div style={{ flex: 1, width: '100%' }}>
                 <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px' }}>From</label>
                 <select required className="form-input" value={newRateForm.fromCurrencyId} onChange={e => setNewRateForm({ ...newRateForm, fromCurrencyId: e.target.value })}>
                   {currencies.map(c => <option key={c.code} value={c.code}>{c.code} ({c.symbol})</option>)}
                 </select>
               </div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, width: '100%' }}>
                 <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px' }}>To</label>
                 <select required className="form-input" value={newRateForm.toCurrencyId} onChange={e => setNewRateForm({ ...newRateForm, toCurrencyId: e.target.value })}>
                   {currencies.map(c => <option key={c.code} value={c.code}>{c.code} ({c.symbol})</option>)}
                 </select>
               </div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, width: '100%' }}>
                 <label style={{ display: 'block', marginBottom: '4px', fontSize: '12px' }}>Rate</label>
                 <input required type="number" step="0.0001" className="form-input" placeholder="e.g. 89500" value={newRateForm.rate} onChange={e => setNewRateForm({ ...newRateForm, rate: e.target.value })} />
               </div>
-              <button type="submit" className="btn-primary" style={{ padding: '10px 16px' }} disabled={!newRateForm.rate}>
-                <Plus size={18} />
+              <button type="submit" className="btn-primary mobile-w-full" style={{ padding: '10px 16px', width: '100%' }} disabled={!newRateForm.rate}>
+                <Plus size={18} /> Add Rate
               </button>
             </form>
           </div>

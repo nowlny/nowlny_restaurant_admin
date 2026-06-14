@@ -334,7 +334,7 @@ export default function MenuPage() {
 
   return (
     <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <header className="responsive-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <h1 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>Menu Management</h1>
           <p style={{ color: 'var(--text-secondary)' }}>Organize your sections, items, and option groups.</p>
@@ -352,9 +352,9 @@ export default function MenuPage() {
       </header>
 
       {/* AI MENU UPLOADER / PARSER SECTION */}
-      <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
+      <div className="responsive-flex-wrap" style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
         <div className="glass-panel" style={{ flex: parsedData ? '1 1 40%' : '1 1 100%', padding: '24px', transition: 'all 0.3s ease' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+          <div className="responsive-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <div style={{ padding: '12px', backgroundColor: 'rgba(168, 85, 247, 0.1)', color: '#a855f7', borderRadius: '12px' }}>
                 <Sparkles size={24} className="animate-pulse" />
@@ -407,7 +407,7 @@ export default function MenuPage() {
             </p>
           </div>
 
-          <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', border: '2px dashed var(--border-color)', borderRadius: '16px', backgroundColor: 'var(--bg-surface)', cursor: 'pointer', transition: 'all 0.2s ease' }} onMouseOver={(e) => (e.currentTarget.style.borderColor = '#a855f7')} onMouseOut={(e) => (e.currentTarget.style.borderColor = 'var(--border-color)')}>
+          <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', border: '2px dashed var(--border-color)', borderRadius: '16px', backgroundColor: 'var(--bg-surface)', cursor: 'pointer', transition: 'all 0.2s ease', textAlign: 'center' }} onMouseOver={(e) => (e.currentTarget.style.borderColor = '#a855f7')} onMouseOut={(e) => (e.currentTarget.style.borderColor = 'var(--border-color)')}>
             <UploadCloud size={48} color="var(--text-muted)" style={{ marginBottom: '16px' }} />
             <p style={{ fontWeight: '600', marginBottom: '4px' }}>Drag & drop your store menu file here</p>
             <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '16px' }}>PDF, Excel (XLSX, CSV), PNG, JPG up to 10MB</p>
@@ -417,7 +417,7 @@ export default function MenuPage() {
 
           {isParsing && (
             <div style={{ marginTop: '24px', padding: '16px', backgroundColor: 'rgba(168, 85, 247, 0.05)', border: '1px solid rgba(168, 85, 247, 0.2)', borderRadius: '12px', position: 'relative', overflow: 'hidden' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '600', color: '#a855f7', marginBottom: '12px' }}>
+              <div className="flex-col-mobile" style={{ display: 'flex', justifyContent: 'space-between', fontSize: '14px', fontWeight: '600', color: '#a855f7', marginBottom: '12px' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Loader2 size={16} className="animate-spin" /> {parsingStep}</span>
                 <span>{parseProgress}%</span>
               </div>
@@ -430,7 +430,7 @@ export default function MenuPage() {
 
         {parsedData && (
           <div className="glass-panel animate-fade-in" style={{ flex: '1 1 50%', padding: '24px', display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', marginBottom: '16px' }}>
+            <div className="responsive-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', marginBottom: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                 <div style={{ padding: '8px', backgroundColor: 'rgba(16, 185, 129, 0.1)', color: 'var(--success)', borderRadius: '8px' }}>
                   <Check size={20} />
@@ -451,7 +451,7 @@ export default function MenuPage() {
                   </h4>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {cat.items.map((item, i) => (
-                      <div key={i} style={{ padding: '12px', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-color)', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                      <div key={i} className="flex-col-mobile" style={{ padding: '12px', backgroundColor: 'var(--bg-elevated)', border: '1px solid var(--border-color)', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                         <div>
                           <p style={{ fontWeight: '700', fontSize: '14px' }}>{item.name}</p>
                           <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '4px' }}>{item.description}</p>
@@ -464,7 +464,7 @@ export default function MenuPage() {
               ))}
             </div>
 
-            <div style={{ display: 'flex', gap: '12px', borderTop: '1px solid var(--border-color)', paddingTop: '16px', marginTop: '16px' }}>
+            <div className="flex-col-mobile" style={{ display: 'flex', gap: '12px', borderTop: '1px solid var(--border-color)', paddingTop: '16px', marginTop: '16px' }}>
               <button onClick={() => { setParsedData(null); setCustomFileName(""); }} className="btn-outline" style={{ flex: 1 }} disabled={isIntegrating}>
                 Discard
               </button>
@@ -480,7 +480,7 @@ export default function MenuPage() {
       {isSectionModalOpen && (
         <div className="glass-panel" style={{ padding: '24px', backgroundColor: 'var(--bg-elevated)', marginBottom: '16px' }}>
           <h3 style={{ fontSize: '18px', fontWeight: '600', marginBottom: '16px' }}>{editingSection ? 'Edit Section' : 'New Section'}</h3>
-          <div style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
+          <div className="flex-col-mobile" style={{ display: 'flex', gap: '16px', marginBottom: '16px' }}>
             <input 
               type="text" className="form-input" placeholder="Section Name (e.g. Appetizers)" style={{ flex: 1 }}
               value={sectionForm.name} onChange={e => setSectionForm({ ...sectionForm, name: e.target.value })}
@@ -528,7 +528,7 @@ export default function MenuPage() {
                 </div>
               </div>
               
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+              <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '16px', marginBottom: '16px' }}>
                 {(section.items || []).map((item: any) => (
                   <div key={item.id} style={{ border: '1px solid var(--border-color)', borderRadius: '12px', padding: '16px', display: 'flex', gap: '16px', backgroundColor: 'var(--bg-elevated)' }}>
                     {item.image ? (

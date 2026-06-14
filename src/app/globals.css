@@ -203,19 +203,27 @@ a {
     display: none !important;
   }
   .mobile-only {
-    display: block !important;
+    display: flex !important;
   }
   .flex-col-mobile {
     flex-direction: column !important;
   }
   .kanban-grid {
-    grid-template-columns: 1fr !important;
-    gap: 24px !important;
-    overflow-y: auto !important;
-    overflow-x: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    flex: 1 !important;
+    overflow: hidden !important;
+  }
+  .kanban-column {
+    display: none !important;
+  }
+  .kanban-column.active-mobile-tab {
+    display: flex !important;
+    flex: 1 !important;
+    height: 100% !important;
   }
   .mobile-sidebar {
-    position: fixed;
+    position: fixed !important;
     top: 0;
     left: 0;
     bottom: 0;
@@ -239,6 +247,25 @@ a {
   }
   .modal-overlay-mobile {
     align-items: flex-end !important;
+  }
+  
+  /* New Responsive Utility Classes */
+  .responsive-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 16px !important;
+  }
+  .responsive-header button {
+    width: 100% !important;
+  }
+  .responsive-grid-2 {
+    grid-template-columns: 1fr !important;
+  }
+  .responsive-grid-3 {
+    grid-template-columns: 1fr !important;
+  }
+  .responsive-flex-wrap {
+    flex-direction: column !important;
   }
 }
 
