@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, LogOut, Store } from 'lucide-react';
+import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, LogOut, Store, Video } from 'lucide-react';
 import Cookies from 'js-cookie';
 import { SettingsService } from '@/services/api/settings';
 
@@ -36,6 +36,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
     { label: 'Orders', icon: ShoppingBag, href: '/orders' },
     { label: 'Menu', icon: Utensils, href: '/menu' },
     { label: 'Stories', icon: ImageIcon, href: '/stories' },
+    { label: 'Reels', icon: Video, href: '/reels' },
     { label: 'Settings', icon: Settings, href: '/settings' },
   ];
 
