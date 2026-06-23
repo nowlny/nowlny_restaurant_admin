@@ -4,6 +4,9 @@ import React, { useEffect, useState } from 'react';
 import { Loader2, Save, Trash2, Plus, MapPin } from 'lucide-react';
 import { SettingsService } from '@/services/api/settings';
 import dynamic from 'next/dynamic';
+import { authService } from '@/services/api/auth';
+import Cookies from 'js-cookie';
+import { useRouter } from 'next/navigation';
 
 const DeliveryZoneMap = dynamic(() => import('@/components/DeliveryZoneMap'), {
   ssr: false,
@@ -15,8 +18,11 @@ const DeliveryZoneMap = dynamic(() => import('@/components/DeliveryZoneMap'), {
 });
 
 export default function SettingsPage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [activeTab, setActiveTab] = useState<'profile' | 'exchange' | 'delivery'>('profile');
 
   // Profile State
@@ -133,6 +139,27 @@ export default function SettingsPage() {
     }
   };
 
+  const handleDeleteAccount = async () => {
+    setIsDeleting(true);
+    try {
+      await authService.deleteAccount();
+      Cookies.remove('access_token');
+      Cookies.remove('refresh_token');
+      router.push('/auth/login');
+    } catch (err: any) {
+      if (err.response?.status === 409) {
+        Cookies.remove('access_token');
+        Cookies.remove('refresh_token');
+        router.push('/auth/login');
+      } else {
+        console.error('Failed to delete account', err);
+        alert('Failed to delete account. Please try again.');
+      }
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', padding: '40px' }}>
@@ -187,7 +214,8 @@ export default function SettingsPage() {
       </div>
 
       {activeTab === 'profile' && profile && (
-        <form onSubmit={handleProfileSave} className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
+          <form onSubmit={handleProfileSave} className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Restaurant Name</label>
@@ -235,7 +263,34 @@ export default function SettingsPage() {
               {saving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} Save Profile
             </button>
           </div>
-        </form>
+          </form>
+
+          <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+            <div>
+              <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--error)', marginBottom: '8px' }}>Danger Zone</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
+                Once you delete your account, there is no going back. Please be certain.
+              </p>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
+              <button 
+                type="button"
+                onClick={() => setShowDeleteModal(true)}
+                style={{
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  color: 'var(--error)',
+                  border: '1px solid var(--error)',
+                  padding: '10px 16px',
+                  borderRadius: '8px',
+                  fontWeight: '600',
+                  cursor: 'pointer'
+                }}
+              >
+                Delete Account
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {activeTab === 'exchange' && (
@@ -302,6 +357,70 @@ export default function SettingsPage() {
             ) : (
               <DeliveryZoneMap polygon={deliveryPolygon} />
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete Account Modal */}
+      {showDeleteModal && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 50,
+          padding: '16px'
+        }}>
+          <div className="glass-panel animate-fade-in" style={{
+            backgroundColor: 'var(--bg-surface)',
+            padding: '24px',
+            borderRadius: '12px',
+            maxWidth: '400px',
+            width: '100%',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
+          }}>
+            <h3 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '16px', color: 'var(--text-primary)' }}>Are you absolutely sure?</h3>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '14px', lineHeight: '1.5' }}>
+              This action cannot be undone. This will permanently delete your account and remove your data from our servers.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
+              <button 
+                onClick={() => setShowDeleteModal(false)}
+                disabled={isDeleting}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: '8px',
+                  border: '1px solid var(--border-color)',
+                  backgroundColor: 'transparent',
+                  color: 'var(--text-primary)',
+                  fontWeight: '500',
+                  cursor: isDeleting ? 'not-allowed' : 'pointer'
+                }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleDeleteAccount}
+                disabled={isDeleting}
+                style={{
+                  padding: '10px 16px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: 'var(--error)',
+                  color: 'white',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  cursor: isDeleting ? 'not-allowed' : 'pointer'
+                }}
+              >
+                {isDeleting ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
+                Yes, delete my account
+              </button>
+            </div>
           </div>
         </div>
       )}

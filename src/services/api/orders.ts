@@ -20,5 +20,12 @@ export const OrdersService = {
   updateOrderStatus: async (orderId: string, status: string) => {
     const { data } = await apiClient.patch(`/orders/${orderId}`, { status });
     return data;
+  },
+  getStatistics: async (period?: string) => {
+    const { data } = await apiClient.get('/orders/restaurant/me/statistics', {
+      params: { period }
+    });
+    return data;
   }
 };
+

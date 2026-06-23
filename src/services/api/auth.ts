@@ -39,5 +39,9 @@ export const authService = {
 
   logout: async (): Promise<void> => {
     await apiClient.post('/auth/logout');
+  },
+
+  deleteAccount: async (): Promise<void> => {
+    await apiClient.delete('/auth/me');
   }
 };
