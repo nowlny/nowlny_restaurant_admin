@@ -36,6 +36,7 @@ export async function POST(request: Request) {
       3. For 'price', extract it strictly as a floating-point number. Do not include currency symbols. If no price is found, assign 0.00.
       4. Try to write a concise, appetizing description for each item if none is present or if it's brief.
       5. Group items into their correct category name.
+      6. If an item has add-ons (extra ingredients, optional sides, upgrades, etc.) mentioned in its description or nearby, extract them into an 'addons' array for that item. Each add-on should have a 'name' and an additional 'price' (0.00 if no extra cost is mentioned). Remove the add-ons from the main description if they are extracted.
       
       You must respond strictly with a valid JSON matching this schema:
       {
@@ -47,7 +48,13 @@ export async function POST(request: Request) {
                 "name": "Item Name",
                 "description": "Item Description",
                 "price": 12.99,
-                "category": "Category Name"
+                "category": "Category Name",
+                "addons": [
+                  {
+                    "name": "Addon Name",
+                    "price": 1.50
+                  }
+                ]
               }
             ]
           }

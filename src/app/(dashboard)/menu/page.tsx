@@ -31,6 +31,10 @@ interface ParsedMenuData {
       price: number;
       image?: string;
       isAvailable: boolean;
+      addons?: {
+        name: string;
+        price?: number;
+      }[];
     }[];
   }[];
 }
@@ -327,7 +331,7 @@ export default function MenuPage() {
 
         for (const [idx, item] of parsedCat.items.entries()) {
           try {
-            await MenuService.createItem({
+            const newItem = await MenuService.createItem({
               sectionId,
               name: item.name,
               description: item.description || "",
@@ -336,6 +340,25 @@ export default function MenuPage() {
               isAvailable: item.isAvailable ?? true,
               sortOrder: idx,
             });
+
+            // Handle extracted addons by creating an Option Group
+            if (item.addons && Array.isArray(item.addons) && item.addons.length > 0) {
+              const optionGroup = await MenuService.createOptionGroup({
+                menuItemId: newItem.id,
+                name: "Add-ons",
+                type: "checkbox",
+                isRequired: false,
+              });
+
+              if (optionGroup && optionGroup.id) {
+                for (const addon of item.addons) {
+                  await MenuService.addOptionToGroup(optionGroup.id, {
+                    name: addon.name,
+                    price: addon.price || 0,
+                  });
+                }
+              }
+            }
           } catch (err: any) {
             console.error(err);
           }
@@ -784,6 +807,16 @@ export default function MenuPage() {
                           >
                             {item.description}
                           </p>
+                          {item.addons && item.addons.length > 0 && (
+                            <div style={{ marginTop: "8px" }}>
+                              <p style={{ fontSize: "12px", fontWeight: "600", color: "#a855f7", marginBottom: "4px" }}>Add-ons:</p>
+                              <ul style={{ fontSize: "11px", color: "var(--text-secondary)", paddingLeft: "16px", margin: 0 }}>
+                                {item.addons.map((addon, aIdx) => (
+                                  <li key={aIdx}>{addon.name} (+${addon.price?.toFixed(2) || "0.00"})</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                         </div>
                         <span
                           style={{

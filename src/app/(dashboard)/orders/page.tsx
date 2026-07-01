@@ -286,15 +286,30 @@ export default function OrdersPage() {
   };
 
   // Helpers for address handling
-  const getAddressText = (address: any) => {
+  const getAddressText = (address: any, isPending: boolean = false) => {
     if (!address) return "";
-    if (typeof address === "string") return address;
+    if (typeof address === "string") return isPending ? "****" : address;
+    if (isPending) {
+      return `${address.city || "Unknown City"}, ****`;
+    }
     const parts = [];
     if (address.building) parts.push(`Bldg ${address.building}`);
     if (address.floor) parts.push(`Floor ${address.floor}`);
     if (address.street) parts.push(address.street);
     if (address.city) parts.push(address.city);
     return parts.join(", ") || "Address provided on map";
+  };
+
+  const formatName = (name: string, isPending: boolean) => {
+    if (!name) return "";
+    if (isPending) return name.substring(0, 3) + "****";
+    return name;
+  };
+
+  const formatPhone = (phone: string, isPending: boolean) => {
+    if (!phone) return "";
+    if (isPending) return phone.substring(0, 5) + "****";
+    return phone;
   };
 
   const getMapQuery = (address: any) => {
@@ -1016,6 +1031,7 @@ export default function OrdersPage() {
                     overflow: "hidden",
                     border: "1px solid var(--border-color)",
                     flexShrink: 0,
+                    position: "relative",
                   }}
                 >
                   <iframe
@@ -1025,8 +1041,34 @@ export default function OrdersPage() {
                     scrolling="no"
                     marginHeight={0}
                     marginWidth={0}
+                    style={{
+                      filter: selectedOrder.status === "pending" ? "blur(5px)" : "none",
+                      pointerEvents: selectedOrder.status === "pending" ? "none" : "auto",
+                      transition: "filter 0.3s ease",
+                    }}
                     src={`https://maps.google.com/maps?q=${encodeURIComponent(getMapQuery(selectedOrder.deliveryAddress))}&t=&z=15&ie=UTF8&iwloc=&output=embed`}
                   />
+                  {selectedOrder.status === "pending" && (
+                    <div
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        backgroundColor: "rgba(0, 0, 0, 0.4)",
+                        color: "white",
+                        fontWeight: "600",
+                        fontSize: "14px",
+                        zIndex: 10,
+                      }}
+                    >
+                      Accept order to view exact location
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1081,7 +1123,7 @@ export default function OrdersPage() {
                     {selectedOrder.paymentStatus}
                   </p>
                 </div>
-                {selectedOrder.customerName && (
+                {(selectedOrder.customerName || selectedOrder.customer?.user?.fullName) && (
                   <div style={{ gridColumn: "1 / -1" }}>
                     <p
                       style={{
@@ -1094,10 +1136,19 @@ export default function OrdersPage() {
                     >
                       Customer
                     </p>
-                    <p style={{ fontSize: "14px", fontWeight: "600" }}>
-                      {selectedOrder.customerName}{" "}
-                      {selectedOrder.customerPhone &&
-                        `• ${selectedOrder.customerPhone}`}
+                    <p style={{ fontSize: "14px", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>
+                        {formatName(selectedOrder.customerName || selectedOrder.customer?.user?.fullName, selectedOrder.status === "pending")}
+                      </span>
+                      {" "}
+                      {(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber) && (
+                        <>
+                          <span>•</span>
+                          <span>
+                            {formatPhone(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber, selectedOrder.status === "pending")}
+                          </span>
+                        </>
+                      )}
                     </p>
                   </div>
                 )}
@@ -1119,9 +1170,10 @@ export default function OrdersPage() {
                         fontSize: "14px",
                         fontWeight: "500",
                         lineHeight: 1.4,
+                        display: "inline-block",
                       }}
                     >
-                      {getAddressText(selectedOrder.deliveryAddress)}
+                      {getAddressText(selectedOrder.deliveryAddress, selectedOrder.status === "pending")}
                     </p>
                   </div>
                 )}
