@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient } from "./client";
 
 export interface RequestOtpResponse {
   success: boolean;
@@ -23,25 +23,39 @@ export interface CompleteSignupData {
 
 export const authService = {
   requestOtp: async (phoneNumber: string): Promise<RequestOtpResponse> => {
-    const { data } = await apiClient.post('/auth/restaurant/request-otp', { phoneNumber });
+    const { data } = await apiClient.post("/auth/restaurant/request-otp", {
+      phoneNumber,
+      channel: "sms",
+    });
     return data;
   },
 
-  verifyOtp: async (phoneNumber: string, code: string): Promise<VerifyOtpResponse> => {
-    const { data } = await apiClient.post('/auth/restaurant/verify-otp', { phoneNumber, code });
+  verifyOtp: async (
+    phoneNumber: string,
+    code: string,
+  ): Promise<VerifyOtpResponse> => {
+    const { data } = await apiClient.post("/auth/restaurant/verify-otp", {
+      phoneNumber,
+      code,
+    });
     return data;
   },
 
-  completeSignup: async (signupData: CompleteSignupData): Promise<VerifyOtpResponse> => {
-    const { data } = await apiClient.post('/auth/restaurant/complete-signup', signupData);
+  completeSignup: async (
+    signupData: CompleteSignupData,
+  ): Promise<VerifyOtpResponse> => {
+    const { data } = await apiClient.post(
+      "/auth/restaurant/complete-signup",
+      signupData,
+    );
     return data;
   },
 
   logout: async (): Promise<void> => {
-    await apiClient.post('/auth/logout');
+    await apiClient.post("/auth/logout");
   },
 
   deleteAccount: async (): Promise<void> => {
-    await apiClient.delete('/auth/me');
-  }
+    await apiClient.delete("/auth/me");
+  },
 };
