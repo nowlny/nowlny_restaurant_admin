@@ -13,12 +13,10 @@ export interface VerifyOtpResponse {
 
 export interface CompleteSignupData {
   fullName: string;
-  signup_token: string;
-  application: {
-    name: string;
-    description?: string;
-    // other optional fields
-  };
+  signupToken: string;
+  restaurantName: string;
+  description?: string;
+  currencyId: string;
 }
 
 export const authService = {

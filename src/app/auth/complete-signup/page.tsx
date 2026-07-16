@@ -1,37 +1,72 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import Cookies from 'js-cookie';
-import { authService } from '@/services/api/auth';
-import { Store, ArrowRight, Loader2 } from 'lucide-react';
-import '@/app/globals.css';
+import React, { useEffect, useState, useSyncExternalStore } from "react";
+import { useRouter } from "next/navigation";
+import Cookies from "js-cookie";
+import { authService } from "@/services/api/auth";
+import { getApiErrorMessage } from "@/services/api/errors";
+import {
+  Currency,
+  restaurantsService,
+} from "@/services/api/restaurants";
+import { Store, ArrowRight, Loader2 } from "lucide-react";
+import "@/app/globals.css";
+
+const subscribeToSignupToken = () => () => undefined;
+const getSignupToken = () => sessionStorage.getItem("signup_token");
+const getServerSignupToken = () => null;
 
 export default function CompleteSignupPage() {
   const router = useRouter();
-  const [signupToken, setSignupToken] = useState<string | null>(null);
+  const signupToken = useSyncExternalStore(
+    subscribeToSignupToken,
+    getSignupToken,
+    getServerSignupToken,
+  );
   
   const [fullName, setFullName] = useState('');
   const [restaurantName, setRestaurantName] = useState('');
   const [restaurantDesc, setRestaurantDesc] = useState('');
+  const [currencies, setCurrencies] = useState<Currency[]>([]);
+  const [currencyId, setCurrencyId] = useState('');
+  const [isLoadingCurrencies, setIsLoadingCurrencies] = useState(true);
   
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    const token = sessionStorage.getItem('signup_token');
-    if (!token) {
-      router.push('/auth/login');
-    } else {
-      setSignupToken(token);
+    if (!signupToken) {
+      router.replace('/auth/login');
     }
-  }, [router]);
+
+    const fetchCurrencies = async () => {
+      try {
+        const activeCurrencies = await restaurantsService.getCurrencies();
+        setCurrencies(activeCurrencies);
+        const defaultCurrency =
+          activeCurrencies.find((currency) => currency.code === "USD") ??
+          activeCurrencies[0];
+        setCurrencyId(defaultCurrency?.code ?? "");
+      } catch (currencyError) {
+        setError(
+          getApiErrorMessage(
+            currencyError,
+            "Currencies could not be loaded. Please refresh and try again.",
+          ),
+        );
+      } finally {
+        setIsLoadingCurrencies(false);
+      }
+    };
+
+    void fetchCurrencies();
+  }, [router, signupToken]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     
-    if (!fullName || !restaurantName) {
+    if (!fullName.trim() || !restaurantName.trim() || !currencyId) {
       return setError('Full name and restaurant name are required');
     }
     
@@ -40,12 +75,11 @@ export default function CompleteSignupPage() {
     setIsLoading(true);
     try {
       const res = await authService.completeSignup({
-        fullName,
-        signup_token: signupToken,
-        application: {
-          name: restaurantName,
-          description: restaurantDesc
-        }
+        fullName: fullName.trim(),
+        signupToken,
+        restaurantName: restaurantName.trim(),
+        description: restaurantDesc.trim() || undefined,
+        currencyId,
       });
       
       if (res.access_token) {
@@ -54,10 +88,15 @@ export default function CompleteSignupPage() {
           Cookies.set('refresh_token', res.refresh_token);
         }
         sessionStorage.removeItem('signup_token');
-        router.push('/'); // Redirect to dashboard
+        router.replace('/application');
       }
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to complete signup. Please try again.');
+    } catch (signupError: unknown) {
+      setError(
+        getApiErrorMessage(
+          signupError,
+          'Failed to complete signup. Please try again.',
+        ),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -110,8 +149,9 @@ export default function CompleteSignupPage() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Owner Full Name <span style={{ color: 'var(--error)'}}>*</span></label>
+            <label htmlFor="owner-full-name" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Owner Full Name <span style={{ color: 'var(--error)'}}>*</span></label>
             <input 
+              id="owner-full-name"
               type="text"
               placeholder="John Doe"
               className="input-field"
@@ -123,8 +163,9 @@ export default function CompleteSignupPage() {
           <div style={{ height: '1px', background: 'var(--border-color)', margin: '8px 0' }} />
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Restaurant Name <span style={{ color: 'var(--error)'}}>*</span></label>
+            <label htmlFor="restaurant-name" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Restaurant Name <span style={{ color: 'var(--error)'}}>*</span></label>
             <input 
+              id="restaurant-name"
               type="text"
               placeholder="e.g. Burger King"
               className="input-field"
@@ -134,8 +175,9 @@ export default function CompleteSignupPage() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Description (Optional)</label>
+            <label htmlFor="restaurant-description" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Description (Optional)</label>
             <textarea 
+              id="restaurant-description"
               placeholder="A brief description of your restaurant..."
               className="input-field"
               value={restaurantDesc}
@@ -145,7 +187,35 @@ export default function CompleteSignupPage() {
             />
           </div>
 
-          <button type="submit" className="btn-primary" disabled={isLoading} style={{ width: '100%', marginTop: '8px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <label htmlFor="restaurant-currency" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>
+              Menu Currency <span style={{ color: 'var(--error)' }}>*</span>
+            </label>
+            <select
+              id="restaurant-currency"
+              className="input-field"
+              value={currencyId}
+              onChange={(event) => setCurrencyId(event.target.value)}
+              disabled={isLoadingCurrencies}
+            >
+              {isLoadingCurrencies ? (
+                <option value="">Loading currencies...</option>
+              ) : currencies.length === 0 ? (
+                <option value="">No currencies available</option>
+              ) : (
+                currencies.map((currency) => (
+                  <option key={currency.code} value={currency.code}>
+                    {currency.code} — {currency.name}
+                  </option>
+                ))
+              )}
+            </select>
+            <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+              This currency will be used for menu prices and restaurant reports.
+            </span>
+          </div>
+
+          <button type="submit" className="btn-primary" disabled={isLoading || isLoadingCurrencies || !currencyId} style={{ width: '100%', marginTop: '8px' }}>
             {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Complete Setup'}
             {!isLoading && <ArrowRight size={20} />}
           </button>

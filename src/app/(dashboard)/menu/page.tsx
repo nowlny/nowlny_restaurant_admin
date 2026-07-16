@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   Loader2,
   Plus,
@@ -13,6 +14,7 @@ import {
   Check,
   AlertCircle,
   FolderPlus,
+  Eye,
 } from "lucide-react";
 import { MenuService } from "@/services/api/menu";
 import { SettingsService } from "@/services/api/settings";
@@ -403,16 +405,28 @@ export default function MenuPage() {
             Organize your sections, items, and option groups.
           </p>
         </div>
-        <button
-          className="btn-primary"
-          onClick={() => {
-            setEditingSection(null);
-            setSectionForm({ name: "", description: "" });
-            setIsSectionModalOpen(true);
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            flexWrap: "wrap",
           }}
         >
-          <Plus size={20} /> Add Section
-        </button>
+          <Link className="btn-outline" href="/menu/preview">
+            <Eye size={20} /> Customer Preview
+          </Link>
+          <button
+            className="btn-primary"
+            onClick={() => {
+              setEditingSection(null);
+              setSectionForm({ name: "", description: "" });
+              setIsSectionModalOpen(true);
+            }}
+          >
+            <Plus size={20} /> Add Section
+          </button>
+        </div>
       </header>
 
       {/* AI MENU UPLOADER / PARSER SECTION */}

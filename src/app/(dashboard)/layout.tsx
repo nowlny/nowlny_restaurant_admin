@@ -1,10 +1,16 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Cookies from 'js-cookie';
 import Sidebar from '@/components/Sidebar';
-import { Loader2, Menu } from 'lucide-react';
+import { Loader2, Menu, RefreshCw } from 'lucide-react';
+import { getApiErrorMessage, isApiNotFound } from '@/services/api/errors';
+import { restaurantsService } from '@/services/api/restaurants';
+
+const subscribeToAccessToken = () => () => undefined;
+const getAccessTokenSnapshot = () => Boolean(Cookies.get('access_token'));
+const getServerAccessTokenSnapshot = () => false;
 
 export default function DashboardLayout({
   children,
@@ -13,27 +19,82 @@ export default function DashboardLayout({
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const hasAccessToken = useSyncExternalStore(
+    subscribeToAccessToken,
+    getAccessTokenSnapshot,
+    getServerAccessTokenSnapshot,
+  );
+  const [verifiedPath, setVerifiedPath] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [accessFailure, setAccessFailure] = useState<{
+    path: string;
+    attempt: number;
+    message: string;
+  } | null>(null);
+  const [accessCheck, setAccessCheck] = useState(0);
 
   useEffect(() => {
-    const token = Cookies.get('access_token');
-    if (!token) {
-      router.push('/auth/login');
-    } else {
-      setIsAuthenticated(true);
+    if (!hasAccessToken) {
+      router.replace('/auth/login');
+      return;
     }
-  }, [pathname, router]);
 
-  // Close sidebar on navigation on mobile
-  useEffect(() => {
-    setIsMobileMenuOpen(false);
-  }, [pathname]);
+    if (pathname === '/application') {
+      return;
+    }
 
-  if (!isAuthenticated) {
+    let cancelled = false;
+    restaurantsService
+      .getMyRestaurant()
+      .then(() => {
+        if (!cancelled) setVerifiedPath(pathname);
+      })
+      .catch((restaurantError: unknown) => {
+        if (cancelled) return;
+        if (isApiNotFound(restaurantError)) {
+          router.replace('/application');
+          return;
+        }
+        setAccessFailure({
+          path: pathname,
+          attempt: accessCheck,
+          message: getApiErrorMessage(
+            restaurantError,
+            'We could not verify your restaurant access. Please try again.',
+          ),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [accessCheck, hasAccessToken, pathname, router]);
+
+  const hasRestaurantAccess =
+    pathname === '/application' || verifiedPath === pathname;
+  const accessError =
+    accessFailure?.path === pathname && accessFailure.attempt === accessCheck
+      ? accessFailure.message
+      : '';
+
+  if (!hasAccessToken || (!hasRestaurantAccess && !accessError)) {
     return (
       <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
+      </div>
+    );
+  }
+
+  if (accessError) {
+    return (
+      <div style={{ height: '100vh', display: 'grid', placeItems: 'center', padding: '24px' }}>
+        <div className="glass-panel" style={{ maxWidth: '460px', padding: '28px', textAlign: 'center' }}>
+          <h1 style={{ margin: '0 0 10px', fontSize: '22px' }}>Restaurant access unavailable</h1>
+          <p style={{ margin: '0 0 20px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{accessError}</p>
+          <button className="btn-primary" onClick={() => setAccessCheck((current) => current + 1)}>
+            <RefreshCw size={18} /> Try again
+          </button>
+        </div>
       </div>
     );
   }

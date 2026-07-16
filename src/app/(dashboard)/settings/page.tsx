@@ -1,12 +1,40 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
-import { Loader2, Save, Trash2, Plus, MapPin } from 'lucide-react';
-import { SettingsService } from '@/services/api/settings';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ImagePlus,
+  Loader2,
+  Save,
+  Trash2,
+  Plus,
+  MapPin,
+  Upload,
+} from 'lucide-react';
+import {
+  Currency,
+  DeliveryZonePoint,
+  ExchangeRate,
+  RestaurantProfile,
+  SettingsService,
+} from '@/services/api/settings';
 import dynamic from 'next/dynamic';
 import { authService } from '@/services/api/auth';
 import Cookies from 'js-cookie';
 import { useRouter } from 'next/navigation';
+import { getApiErrorMessage, isApiStatus } from '@/services/api/errors';
+
+const PROFILE_IMAGE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/avif',
+];
+const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const toBackgroundImage = (url: string | null) =>
+  url ? `url("${url.replace(/["\\\n\r]/g, '')}")` : 'none';
 
 const DeliveryZoneMap = dynamic(() => import('@/components/DeliveryZoneMap'), {
   ssr: false,
@@ -26,86 +54,202 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<'profile' | 'exchange' | 'delivery'>('profile');
 
   // Profile State
-  const [profile, setProfile] = useState<any>(null);
-  const [deliveryPolygon, setDeliveryPolygon] = useState<any[]>([]);
-  const [isFetchingPolygon, setIsFetchingPolygon] = useState(false);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
+  const [deliveryPolygon, setDeliveryPolygon] = useState<DeliveryZonePoint[]>([]);
+  const [isFetchingPolygon, setIsFetchingPolygon] = useState(true);
   const [polygonFetched, setPolygonFetched] = useState(false);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [backgroundFile, setBackgroundFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [backgroundPreview, setBackgroundPreview] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState('');
+  const [profileSuccess, setProfileSuccess] = useState('');
+  const logoObjectUrl = useRef<string | null>(null);
+  const backgroundObjectUrl = useRef<string | null>(null);
 
   // Exchange Rates State
-  const [exchangeRates, setExchangeRates] = useState<any[]>([]);
-  const [currencies, setCurrencies] = useState<any[]>([]);
+  const [exchangeRates, setExchangeRates] = useState<ExchangeRate[]>([]);
+  const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [newRateForm, setNewRateForm] = useState({ fromCurrencyId: '', toCurrencyId: '', rate: '' });
 
   useEffect(() => {
-    fetchData();
+    let cancelled = false;
+    Promise.all([
+      SettingsService.getOwnRestaurant(),
+      SettingsService.getExchangeRates(),
+      SettingsService.getCurrencies(),
+    ])
+      .then(([profileData, ratesData, currenciesData]) => {
+        if (cancelled) return;
+        setProfile(profileData);
+        setLogoPreview(profileData.logo);
+        setBackgroundPreview(profileData.backgroundImageUrl);
+        setExchangeRates(ratesData);
+        setCurrencies(currenciesData);
+        if (currenciesData.length >= 2) {
+          setNewRateForm((previous) => ({
+            ...previous,
+            fromCurrencyId: currenciesData[0].code,
+            toCurrencyId: currenciesData[1].code,
+          }));
+        }
+      })
+      .catch((loadError: unknown) => {
+        if (!cancelled) {
+          setProfileError(
+            getApiErrorMessage(loadError, 'Failed to load restaurant settings.'),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'delivery' && profile?.id && !polygonFetched && !isFetchingPolygon) {
-      fetchPolygon(profile.id);
+    if (activeTab === 'delivery' && profile?.id && !polygonFetched) {
+      let cancelled = false;
+      SettingsService.getFullRestaurant(profile.id)
+        .then((fullData) => {
+          if (cancelled) return;
+          const firstZone = fullData.deliveryZones?.[0];
+          setDeliveryPolygon(firstZone?.polygon ?? []);
+          setPolygonFetched(true);
+        })
+        .catch((polygonError: unknown) => {
+          if (!cancelled) {
+            setProfileError(
+              getApiErrorMessage(polygonError, 'Failed to load the delivery zone.'),
+            );
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setIsFetchingPolygon(false);
+        });
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [activeTab, profile]);
+  }, [activeTab, polygonFetched, profile?.id]);
 
-  const fetchPolygon = async (id: string) => {
-    setIsFetchingPolygon(true);
-    try {
-      const fullData = await SettingsService.getFullRestaurant(id);
-      if (fullData?.deliveryZones && fullData.deliveryZones.length > 0) {
-        setDeliveryPolygon(fullData.deliveryZones[0].polygon || []);
+  useEffect(
+    () => () => {
+      if (logoObjectUrl.current) URL.revokeObjectURL(logoObjectUrl.current);
+      if (backgroundObjectUrl.current) {
+        URL.revokeObjectURL(backgroundObjectUrl.current);
       }
-      setPolygonFetched(true);
-    } catch (e) {
-      console.error('Failed to fetch polygon data', e);
-    } finally {
-      setIsFetchingPolygon(false);
+    },
+    [],
+  );
+
+  const handleImageSelection = (
+    kind: 'logo' | 'background',
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setProfileError('');
+    setProfileSuccess('');
+
+    if (!PROFILE_IMAGE_TYPES.includes(file.type)) {
+      setProfileError('Choose a JPEG, PNG, WebP, or AVIF image.');
+      event.target.value = '';
+      return;
     }
-  };
+    if (file.size > MAX_PROFILE_IMAGE_BYTES) {
+      setProfileError('The selected image must be 5 MB or smaller.');
+      event.target.value = '';
+      return;
+    }
 
-  const fetchData = async () => {
-    setLoading(true);
-    try {
-      const [profileData, ratesData, currenciesData] = await Promise.all([
-        SettingsService.getOwnRestaurant(),
-        SettingsService.getExchangeRates(),
-        SettingsService.getCurrencies()
-      ]);
-      setProfile(profileData);
-      setExchangeRates(ratesData);
-      setCurrencies(currenciesData);
-      
-      if (currenciesData.length >= 2) {
-        setNewRateForm(prev => ({
-          ...prev,
-          fromCurrencyId: currenciesData[0].code,
-          toCurrencyId: currenciesData[1].code
-        }));
+    const previewUrl = URL.createObjectURL(file);
+    if (kind === 'logo') {
+      if (logoObjectUrl.current) URL.revokeObjectURL(logoObjectUrl.current);
+      logoObjectUrl.current = previewUrl;
+      setLogoFile(file);
+      setLogoPreview(previewUrl);
+    } else {
+      if (backgroundObjectUrl.current) {
+        URL.revokeObjectURL(backgroundObjectUrl.current);
       }
-    } catch (err) {
-      console.error('Failed to fetch settings data', err);
-    } finally {
-      setLoading(false);
+      backgroundObjectUrl.current = previewUrl;
+      setBackgroundFile(file);
+      setBackgroundPreview(previewUrl);
     }
   };
 
   const handleProfileSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!profile) return;
+    setProfileError('');
+    setProfileSuccess('');
+
+    const currencyId = profile.currency?.code;
+    const deliveryFee = Number(profile.deliveryFee);
+    const minDeliveryTime = Number(profile.deliveryTimeMinMinutes);
+    const maxDeliveryTime = Number(profile.deliveryTimeMaxMinutes);
+    if (!currencyId) {
+      setProfileError('The restaurant currency is missing. Please contact support.');
+      return;
+    }
+    if (
+      !Number.isFinite(deliveryFee) ||
+      deliveryFee < 0 ||
+      !Number.isInteger(minDeliveryTime) ||
+      minDeliveryTime < 1 ||
+      !Number.isInteger(maxDeliveryTime) ||
+      maxDeliveryTime < minDeliveryTime
+    ) {
+      setProfileError('Check the delivery fee and make sure the maximum delivery time is not lower than the minimum.');
+      return;
+    }
+
     setSaving(true);
     try {
-      await SettingsService.updateOwnRestaurant({
+      const uploadedImages =
+        logoFile || backgroundFile
+          ? await SettingsService.uploadProfileImages({
+              logo: logoFile ?? undefined,
+              backgroundImage: backgroundFile ?? undefined,
+            })
+          : {};
+      const logo = uploadedImages.logo ?? profile.logo ?? undefined;
+      const backgroundImageUrl =
+        uploadedImages.backgroundImageUrl ??
+        profile.backgroundImageUrl ??
+        undefined;
+      const updatedProfile = await SettingsService.updateOwnRestaurant({
         name: profile.name,
-        description: profile.description,
-        phone: profile.phone,
-        website: profile.website,
-        deliveryFee: parseFloat(profile.deliveryFee) || 0,
-        deliveryTimeMinMinutes: parseInt(profile.deliveryTimeMinMinutes) || 0,
-        deliveryTimeMaxMinutes: parseInt(profile.deliveryTimeMaxMinutes) || 0,
-        logo: profile.logo,
-        backgroundImageUrl: profile.backgroundImageUrl
+        description: profile.description ?? '',
+        phone: profile.phone ?? '',
+        website: profile.website ?? '',
+        deliveryFee,
+        deliveryTimeMinMinutes: minDeliveryTime,
+        deliveryTimeMaxMinutes: maxDeliveryTime,
+        currencyId,
+        ...(logo ? { logo } : {}),
+        ...(backgroundImageUrl ? { backgroundImageUrl } : {}),
       });
-      alert('Profile updated successfully!');
-    } catch (err) {
-      console.error('Failed to update profile', err);
-      alert('Failed to update profile');
+      setProfile(updatedProfile);
+      setLogoPreview(updatedProfile.logo);
+      setBackgroundPreview(updatedProfile.backgroundImageUrl);
+      setLogoFile(null);
+      setBackgroundFile(null);
+      if (logoObjectUrl.current) URL.revokeObjectURL(logoObjectUrl.current);
+      if (backgroundObjectUrl.current) {
+        URL.revokeObjectURL(backgroundObjectUrl.current);
+      }
+      logoObjectUrl.current = null;
+      backgroundObjectUrl.current = null;
+      setProfileSuccess('Restaurant profile updated successfully.');
+    } catch (saveError: unknown) {
+      setProfileError(
+        getApiErrorMessage(saveError, 'Failed to update the restaurant profile.'),
+      );
     } finally {
       setSaving(false);
     }
@@ -146,13 +290,13 @@ export default function SettingsPage() {
       Cookies.remove('access_token');
       Cookies.remove('refresh_token');
       router.push('/auth/login');
-    } catch (err: any) {
-      if (err.response?.status === 409) {
+    } catch (deleteError: unknown) {
+      if (isApiStatus(deleteError, 409)) {
         Cookies.remove('access_token');
         Cookies.remove('refresh_token');
         router.push('/auth/login');
       } else {
-        console.error('Failed to delete account', err);
+        console.error('Failed to delete account', deleteError);
         alert('Failed to delete account. Please try again.');
       }
     } finally {
@@ -214,8 +358,43 @@ export default function SettingsPage() {
       </div>
 
       {activeTab === 'profile' && profile && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '600px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '900px' }}>
           <form onSubmit={handleProfileSave} className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {profileError && (
+            <div
+              role="alert"
+              style={{
+                display: 'flex',
+                gap: '10px',
+                alignItems: 'flex-start',
+                padding: '12px 14px',
+                color: 'var(--error)',
+                background: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.2)',
+                borderRadius: '10px',
+              }}
+            >
+              <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+              {profileError}
+            </div>
+          )}
+          {profileSuccess && (
+            <div
+              role="status"
+              style={{
+                display: 'flex',
+                gap: '10px',
+                alignItems: 'center',
+                padding: '12px 14px',
+                color: 'var(--success)',
+                background: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.2)',
+                borderRadius: '10px',
+              }}
+            >
+              <CheckCircle2 size={18} /> {profileSuccess}
+            </div>
+          )}
           <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Restaurant Name</label>
@@ -232,16 +411,94 @@ export default function SettingsPage() {
             <textarea className="form-input" rows={3} value={profile.description || ''} onChange={e => setProfile({ ...profile, description: e.target.value })} />
           </div>
 
-          <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-            <div>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Logo URL</label>
-              <input type="url" className="form-input" value={profile.logo || ''} onChange={e => setProfile({ ...profile, logo: e.target.value })} />
+          <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.8fr) minmax(320px, 1.5fr)', gap: '20px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div>
+                <p style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>Restaurant logo</p>
+                <p style={{ margin: '3px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>Square image recommended</p>
+              </div>
+              <div
+                role="img"
+                aria-label="Restaurant logo preview"
+                style={{
+                  width: '140px',
+                  height: '140px',
+                  borderRadius: '20px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  backgroundColor: 'var(--bg-elevated)',
+                  backgroundImage: toBackgroundImage(logoPreview),
+                  backgroundPosition: 'center',
+                  backgroundSize: 'cover',
+                  border: logoFile ? '2px solid var(--accent-primary)' : '1px solid var(--border-color)',
+                  overflow: 'hidden',
+                }}
+              >
+                {!logoPreview && <ImagePlus size={32} color="var(--text-muted)" />}
+              </div>
+              <input
+                id="restaurant-logo-file"
+                type="file"
+                accept={PROFILE_IMAGE_TYPES.join(',')}
+                onChange={(event) => handleImageSelection('logo', event)}
+                style={{ display: 'none' }}
+              />
+              <label
+                htmlFor="restaurant-logo-file"
+                className="btn-outline"
+                style={{ alignSelf: 'flex-start', padding: '9px 14px', fontSize: '13px' }}
+              >
+                <Upload size={16} /> {logoFile ? 'Choose another logo' : 'Change logo'}
+              </label>
+              {logoFile && <span style={{ color: 'var(--accent-primary)', fontSize: '12px' }}>New image selected</span>}
             </div>
-            <div>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Background Image URL</label>
-              <input type="url" className="form-input" value={profile.backgroundImageUrl || ''} onChange={e => setProfile({ ...profile, backgroundImageUrl: e.target.value })} />
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <div>
+                <p style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>Cover image</p>
+                <p style={{ margin: '3px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>Wide 16:7 image recommended</p>
+              </div>
+              <div
+                role="img"
+                aria-label="Restaurant cover image preview"
+                style={{
+                  width: '100%',
+                  aspectRatio: '16 / 7',
+                  minHeight: '140px',
+                  borderRadius: '20px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  backgroundColor: 'var(--bg-elevated)',
+                  backgroundImage: toBackgroundImage(backgroundPreview),
+                  backgroundPosition: 'center',
+                  backgroundSize: 'cover',
+                  border: backgroundFile ? '2px solid var(--accent-primary)' : '1px solid var(--border-color)',
+                  overflow: 'hidden',
+                }}
+              >
+                {!backgroundPreview && <ImagePlus size={36} color="var(--text-muted)" />}
+              </div>
+              <input
+                id="restaurant-background-file"
+                type="file"
+                accept={PROFILE_IMAGE_TYPES.join(',')}
+                onChange={(event) => handleImageSelection('background', event)}
+                style={{ display: 'none' }}
+              />
+              <label
+                htmlFor="restaurant-background-file"
+                className="btn-outline"
+                style={{ alignSelf: 'flex-start', padding: '9px 14px', fontSize: '13px' }}
+              >
+                <Upload size={16} /> {backgroundFile ? 'Choose another cover' : 'Change cover image'}
+              </label>
+              {backgroundFile && <span style={{ color: 'var(--accent-primary)', fontSize: '12px' }}>New image selected</span>}
             </div>
           </div>
+
+          <p style={{ margin: '-8px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>
+            JPEG, PNG, WebP, or AVIF. Maximum 5 MB per image. New images upload when you save the profile.
+          </p>
 
           <div className="responsive-grid-3" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
             <div>
@@ -301,7 +558,7 @@ export default function SettingsPage() {
               <p style={{ color: 'var(--text-secondary)', marginBottom: '16px' }}>No custom exchange rates set. The platform default rate applies.</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
-                {exchangeRates.map((rate: any) => (
+                {exchangeRates.map((rate) => (
                   <div key={rate.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', border: '1px solid var(--border-color)', borderRadius: '8px', backgroundColor: 'var(--bg-elevated)' }}>
                     <div style={{ fontWeight: '500' }}>
                       1 {rate.fromCurrencyId} = {rate.rate} {rate.toCurrencyId}

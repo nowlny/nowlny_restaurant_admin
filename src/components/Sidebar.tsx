@@ -3,32 +3,49 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, LogOut, Store, Video } from 'lucide-react';
+import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, Loader2, LogOut, Store, Video } from 'lucide-react';
 import Cookies from 'js-cookie';
 import { SettingsService } from '@/services/api/settings';
+import { authService } from '@/services/api/auth';
+
+interface SidebarProfile {
+  name?: string;
+  logo?: string | null;
+  backgroundImageUrl?: string | null;
+}
 
 export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [profile, setProfile] = useState<any>(null);
+  const [profile, setProfile] = useState<SidebarProfile | null>(null);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   useEffect(() => {
-    fetchProfile();
-  }, []);
+    if (pathname === '/application') return;
+    let cancelled = false;
+    SettingsService.getOwnRestaurant()
+      .then((data: SidebarProfile) => {
+        if (!cancelled) setProfile(data);
+      })
+      .catch(() => {
+        // The dashboard access gate owns profile-fetch errors.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
 
-  const fetchProfile = async () => {
+  const handleLogout = async () => {
+    setIsLoggingOut(true);
     try {
-      const data = await SettingsService.getOwnRestaurant();
-      setProfile(data);
-    } catch (err) {
-      console.error('Failed to fetch profile for sidebar', err);
+      await authService.logout();
+    } catch {
+      // Clear the local session even if the token already expired.
+    } finally {
+      Cookies.remove('access_token');
+      Cookies.remove('refresh_token');
+      router.replace('/auth/login');
     }
-  };
-
-  const handleLogout = () => {
-    Cookies.remove('access_token');
-    Cookies.remove('refresh_token');
-    router.push('/auth/login');
   };
 
   const navItems = [
@@ -140,6 +157,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
               fontWeight: isActive ? '600' : '500',
               transition: 'all 0.2s ease',
             }}
+            onClick={onClose}
             onMouseEnter={(e) => {
               if (!isActive) {
                 e.currentTarget.style.backgroundColor = 'var(--bg-elevated)';
@@ -161,7 +179,8 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
 
       <div style={{ padding: '24px 16px', borderTop: '1px solid var(--border-color)' }}>
         <button 
-          onClick={handleLogout}
+          onClick={() => void handleLogout()}
+          disabled={isLoggingOut}
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -188,8 +207,8 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
             e.currentTarget.style.color = 'var(--text-secondary)';
           }}
         >
-          <LogOut size={20} />
-          Log Out
+          {isLoggingOut ? <Loader2 className="animate-spin" size={20} /> : <LogOut size={20} />}
+          {isLoggingOut ? 'Logging out…' : 'Log Out'}
         </button>
       </div>
     </aside>

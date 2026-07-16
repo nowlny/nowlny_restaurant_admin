@@ -1,66 +1,90 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   Loader2,
-  CheckCircle,
-  XCircle,
   X,
   Clock,
   CheckCircle2,
   Truck,
   PackageCheck,
-  ListFilter,
   AlertCircle,
+  Building2,
+  Navigation,
+  UserRound,
 } from "lucide-react";
-import { OrdersService } from "@/services/api/orders";
+import DriverTrackingModal from "@/components/DriverTrackingModal";
+import {
+  DeliveryIntegration,
+  ORDER_STATUS_LABELS,
+  OrderStatus,
+  OrdersService,
+  PickupRequest,
+  OrderAddress,
+  RestaurantOrder,
+  RestaurantDriver,
+} from "@/services/api/orders";
+import { getApiErrorMessage } from "@/services/api/errors";
+
+type BoardOrderStatus = Exclude<OrderStatus, "cancelled" | "rejected">;
+
+const ORDER_STATUS_STYLES: Record<
+  OrderStatus,
+  { backgroundColor: string; color: string }
+> = {
+  pending: {
+    backgroundColor: "rgba(234, 179, 8, 0.1)",
+    color: "var(--warning)",
+  },
+  confirmed: {
+    backgroundColor: "rgba(59, 130, 246, 0.1)",
+    color: "#3b82f6",
+  },
+  out_for_delivery: {
+    backgroundColor: "rgba(168, 85, 247, 0.1)",
+    color: "#a855f7",
+  },
+  delivered: {
+    backgroundColor: "rgba(16, 185, 129, 0.1)",
+    color: "var(--success)",
+  },
+  cancelled: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    color: "var(--error)",
+  },
+  rejected: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    color: "var(--error)",
+  },
+};
 
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<any[]>([]);
+  const [orders, setOrders] = useState<RestaurantOrder[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<RestaurantOrder | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
+  const [actionSuccess, setActionSuccess] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
 
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
   const [orderToReject, setOrderToReject] = useState<string | null>(null);
   const [rejectReason, setRejectReason] = useState("");
 
-  const [draggedOverStatus, setDraggedOverStatus] = useState<string | null>(
-    null,
-  );
-  const [activeMobileTab, setActiveMobileTab] = useState<string>("pending");
-
-  const handleDragOver = (e: React.DragEvent, status: string) => {
-    e.preventDefault();
-    setDraggedOverStatus(status);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDraggedOverStatus(null);
-  };
-
-  const handleDrop = async (e: React.DragEvent, newStatus: string) => {
-    e.preventDefault();
-    setDraggedOverStatus(null);
-    const orderId = e.dataTransfer.getData("text/plain");
-    if (orderId) {
-      const order = orders.find((o) => o.id === orderId);
-      if (order && order.status !== newStatus) {
-        if (newStatus === "rejected") {
-          confirmReject(orderId);
-        } else if (order.status === "pending" && newStatus === "confirmed") {
-          await handleAccept(orderId);
-        } else {
-          await updateStatus(orderId, newStatus);
-        }
-      }
-    }
-  };
+  const [pickupRequests, setPickupRequests] = useState<PickupRequest[]>([]);
+  const [dispatchOrder, setDispatchOrder] = useState<RestaurantOrder | null>(null);
+  const [trackingOrder, setTrackingOrder] = useState<RestaurantOrder | null>(null);
+  const [drivers, setDrivers] = useState<RestaurantDriver[]>([]);
+  const [deliveryIntegration, setDeliveryIntegration] =
+    useState<DeliveryIntegration | null>(null);
+  const [selectedDriverId, setSelectedDriverId] = useState("");
+  const [loadingDispatchOptions, setLoadingDispatchOptions] = useState(false);
+  const [activeMobileTab, setActiveMobileTab] =
+    useState<BoardOrderStatus>("pending");
 
   useEffect(() => {
-    if (selectedOrder || isRejectModalOpen) {
+    if (selectedOrder || isRejectModalOpen || dispatchOrder || trackingOrder) {
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = "";
@@ -68,51 +92,70 @@ export default function OrdersPage() {
     return () => {
       document.body.style.overflow = "";
     };
-  }, [selectedOrder, isRejectModalOpen]);
+  }, [selectedOrder, isRejectModalOpen, dispatchOrder, trackingOrder]);
 
-  useEffect(() => {
-    fetchOrders();
-    // In a real app, you would set up a polling interval or WebSocket here
-    const interval = setInterval(() => fetchOrders(false), 15000); // Poll every 15s silently
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchOrders = async (showLoader = true) => {
+  const fetchOrders = useCallback(async (showLoader = true) => {
     if (showLoader) setLoading(true);
     try {
-      // Fetch all non-archived orders for Kanban (or just fetch all if that's the only option)
-      const data = await OrdersService.getOrders({ limit: 100 });
+      const [data, requests] = await Promise.all([
+        OrdersService.getOrders({ limit: 100 }),
+        OrdersService.getPickupRequests().catch(() => []),
+      ]);
       setOrders(data);
-
-      // If we have a selected order open, update its state silently
-      if (selectedOrder) {
-        const updatedSelected = data.find(
-          (o: any) => o.id === selectedOrder.id,
-        );
-        if (updatedSelected) setSelectedOrder(updatedSelected);
-      }
-    } catch (err) {
-      console.error("Failed to fetch orders", err);
+      setPickupRequests(requests);
+      setLastSyncedAt(new Date());
+      setSelectedOrder((currentOrder) => {
+        if (!currentOrder) return null;
+        return data.find((order) => order.id === currentOrder.id) ?? currentOrder;
+      });
+      setTrackingOrder((currentOrder) => {
+        if (!currentOrder) return null;
+        return data.find((order) => order.id === currentOrder.id) ?? currentOrder;
+      });
+    } catch (fetchError: unknown) {
+      setActionError(
+        getApiErrorMessage(fetchError, "Orders could not be loaded. Please try again."),
+      );
     } finally {
       if (showLoader) setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const initialFetch = window.setTimeout(() => void fetchOrders(), 0);
+    const interval = window.setInterval(() => void fetchOrders(false), 15_000);
+    return () => {
+      window.clearTimeout(initialFetch);
+      window.clearInterval(interval);
+    };
+  }, [fetchOrders]);
+
+  const handleTrackedOrderStatus = useCallback(
+    (orderId: string, status: OrderStatus) => {
+      const updateStatus = (order: RestaurantOrder) =>
+        order.id === orderId ? { ...order, status } : order;
+      setOrders((currentOrders) => currentOrders.map(updateStatus));
+      setSelectedOrder((currentOrder) =>
+        currentOrder ? updateStatus(currentOrder) : null,
+      );
+      setTrackingOrder((currentOrder) =>
+        currentOrder ? updateStatus(currentOrder) : null,
+      );
+    },
+    [],
+  );
 
   // Status transitions
   const handleAccept = async (orderId: string) => {
+    setActionError("");
+    setActionSuccess("");
     setActionLoading("accept_" + orderId);
     try {
       await OrdersService.acceptOrder(orderId);
+      setActionSuccess("Order confirmed and ready for dispatch.");
       await fetchOrders(false);
-    } catch (err) {
-      console.error("Failed to accept order", err);
-      // Fallback: Try generic update if specific one fails
-      try {
-        await OrdersService.updateOrderStatus(orderId, "confirmed");
-        await fetchOrders(false);
-      } catch (err2) {
-        alert("Failed to accept order");
-      }
+    } catch (acceptError: unknown) {
+      setActionError(getApiErrorMessage(acceptError, "Failed to accept this order."));
     } finally {
       setActionLoading(null);
     }
@@ -126,73 +169,137 @@ export default function OrdersPage() {
 
   const handleReject = async () => {
     if (!orderToReject || !rejectReason) return;
+    setActionError("");
+    setActionSuccess("");
     setActionLoading("reject_" + orderToReject);
     try {
       await OrdersService.rejectOrder(orderToReject, rejectReason);
       setIsRejectModalOpen(false);
       setOrderToReject(null);
+      setActionSuccess("Order rejected and the customer was notified.");
       await fetchOrders(false);
-    } catch (err) {
-      console.error("Failed to reject order", err);
-      // Fallback update
-      try {
-        await OrdersService.updateOrderStatus(orderToReject, "rejected");
-        setIsRejectModalOpen(false);
-        setOrderToReject(null);
-        await fetchOrders(false);
-      } catch (e) {
-        alert("Failed to reject order");
-      }
+    } catch (rejectError: unknown) {
+      setActionError(getApiErrorMessage(rejectError, "Failed to reject this order."));
     } finally {
       setActionLoading(null);
     }
   };
 
-  const updateStatus = async (orderId: string, status: string) => {
-    setActionLoading(`status_${orderId}_${status}`);
+  const openDispatchModal = async (order: RestaurantOrder) => {
+    setDispatchOrder(order);
+    setSelectedDriverId("");
+    setLoadingDispatchOptions(true);
+    setActionError("");
+    setActionSuccess("");
+
     try {
-      // It might be 'out-for-delivery' or 'out_for_delivery' based on backend, we'll try the generic one
-      await OrdersService.updateOrderStatus(orderId, status);
+      const [driverResult, integrationResult] = await Promise.allSettled([
+        OrdersService.getDrivers(),
+        OrdersService.getDeliveryIntegration(),
+      ]);
+      const activeDrivers =
+        driverResult.status === "fulfilled" ? driverResult.value : [];
+      const integration =
+        integrationResult.status === "fulfilled" ? integrationResult.value : null;
+      setDrivers(activeDrivers);
+      setDeliveryIntegration(integration);
+      const defaultDriver = activeDrivers.find((driver) => driver.isAvailable);
+      setSelectedDriverId(defaultDriver?.id ?? "");
+
+      if (driverResult.status === "rejected" && integrationResult.status === "rejected") {
+        setActionError("Dispatch options could not be loaded. Please try again.");
+      }
+    } finally {
+      setLoadingDispatchOptions(false);
+    }
+  };
+
+  const handleOwnDriverDispatch = async () => {
+    if (!dispatchOrder || !selectedDriverId) return;
+    setActionLoading(`dispatch_driver_${dispatchOrder.id}`);
+    setActionError("");
+    try {
+      await OrdersService.assignDriver(dispatchOrder.id, selectedDriverId);
+      await OrdersService.markOutForDelivery(dispatchOrder.id);
+      setDispatchOrder(null);
+      setActionSuccess("Driver assigned and the order is out for delivery.");
       await fetchOrders(false);
-    } catch (err) {
-      console.error(`Failed to update to ${status}`, err);
-      alert(
-        `Failed to update status to ${status}. Ensure API endpoint supports this.`,
+    } catch (dispatchError: unknown) {
+      setActionError(
+        getApiErrorMessage(dispatchError, "The driver could not be assigned to this order."),
       );
     } finally {
       setActionLoading(null);
     }
   };
 
+  const handlePartnerDispatch = async () => {
+    const company = deliveryIntegration?.company;
+    if (!dispatchOrder || deliveryIntegration?.status !== "accepted" || !company) return;
+    setActionLoading(`dispatch_partner_${dispatchOrder.id}`);
+    setActionError("");
+    try {
+      const request = await OrdersService.requestPickup(dispatchOrder.id, company.id);
+      setPickupRequests((current) => [request, ...current]);
+      setDispatchOrder(null);
+      setActionSuccess(`Pickup requested from ${company.name}.`);
+      await fetchOrders(false);
+    } catch (dispatchError: unknown) {
+      setActionError(
+        getApiErrorMessage(dispatchError, "The delivery pickup could not be requested."),
+      );
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const activePickupForOrder = (orderId: string) =>
+    pickupRequests.find(
+      (request) =>
+        request.order?.id === orderId &&
+        ["pending", "accepted", "driver_assigned", "picked_up"].includes(
+          request.status,
+        ),
+    );
+
   // Kanban buckets
   const pendingOrders = orders.filter((o) => o.status === "pending");
-  const confirmedOrders = orders.filter(
-    (o) => o.status === "confirmed" || o.status === "accepted",
-  );
-  const outOrders = orders.filter(
-    (o) => o.status === "out_for_delivery" || o.status === "out-for-delivery",
+  const confirmedOrders = orders.filter((o) => o.status === "confirmed");
+  const outForDeliveryOrders = orders.filter(
+    (o) => o.status === "out_for_delivery",
   );
   const deliveredOrders = orders.filter((o) => o.status === "delivered");
 
-  const renderKanbanCard = (order: any, actions: React.ReactNode) => {
+  const formatOrderCurrency = (
+    order: RestaurantOrder,
+    value: number | string | undefined,
+  ) => {
+    const currency = order.restaurant?.currency;
+    const code = currency?.code ?? "USD";
+    try {
+      return new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: code,
+      }).format(Number(value || 0));
+    } catch {
+      return `${Number(value || 0).toFixed(2)} ${currency?.symbol ?? code}`;
+    }
+  };
+
+  const renderKanbanCard = (
+    order: RestaurantOrder,
+    actions: React.ReactNode,
+  ) => {
     return (
       <div
         key={order.id}
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData("text/plain", order.id);
-          e.currentTarget.style.opacity = "0.5";
-        }}
-        onDragEnd={(e) => {
-          e.currentTarget.style.opacity = "1";
-        }}
         onClick={() => setSelectedOrder(order)}
         style={{
           padding: "16px",
           display: "flex",
           flexDirection: "column",
           gap: "12px",
-          cursor: "grab",
+          cursor: "pointer",
           backgroundColor:
             selectedOrder?.id === order.id
               ? "var(--bg-elevated)"
@@ -230,17 +337,19 @@ export default function OrdersPage() {
                 marginBottom: "4px",
               }}
             >
-              #{order.id?.slice(-6).toUpperCase() || "UNKNOWN"}
+              {order.orderNumber || `#${order.id?.slice(-6).toUpperCase() || "UNKNOWN"}`}
             </h4>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-              {new Date(order.createdAt || Date.now()).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
+              {order.createdAt
+                ? new Date(order.createdAt).toLocaleTimeString([], {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })
+                : "Time unavailable"}
             </p>
           </div>
           <div style={{ fontWeight: "800", color: "var(--accent-primary)" }}>
-            ${order.totalAmount || order.total || 0}
+            {formatOrderCurrency(order, order.totalAmount || order.total || 0)}
           </div>
         </div>
 
@@ -286,7 +395,10 @@ export default function OrdersPage() {
   };
 
   // Helpers for address handling
-  const getAddressText = (address: any, isPending: boolean = false) => {
+  const getAddressText = (
+    address: OrderAddress | string | null | undefined,
+    isPending = false,
+  ) => {
     if (!address) return "";
     if (typeof address === "string") return isPending ? "****" : address;
     if (isPending) {
@@ -312,7 +424,7 @@ export default function OrdersPage() {
     return phone;
   };
 
-  const getMapQuery = (address: any) => {
+  const getMapQuery = (address: OrderAddress | string | null | undefined) => {
     if (!address) return "";
     if (typeof address === "string") return address;
     if (address.latitude && address.longitude)
@@ -345,7 +457,7 @@ export default function OrdersPage() {
             Active Orders Board
           </h1>
           <p style={{ color: "var(--text-secondary)" }}>
-            Manage your kitchen workflow and deliveries in real-time.
+            Manage your kitchen workflow and delivery handoffs.
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -371,10 +483,41 @@ export default function OrdersPage() {
                 animation: "pulse 2s infinite",
               }}
             />
-            Live Sync
+            {lastSyncedAt
+              ? `Updated ${lastSyncedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+              : "Checking orders"}
           </div>
         </div>
       </header>
+
+      {actionError && (
+        <div
+          role="alert"
+          style={{
+            padding: "12px 16px",
+            borderRadius: "10px",
+            color: "var(--error)",
+            background: "rgba(239, 68, 68, 0.08)",
+            border: "1px solid rgba(239, 68, 68, 0.2)",
+          }}
+        >
+          {actionError}
+        </div>
+      )}
+      {actionSuccess && (
+        <div
+          role="status"
+          style={{
+            padding: "12px 16px",
+            borderRadius: "10px",
+            color: "var(--success)",
+            background: "rgba(16, 185, 129, 0.08)",
+            border: "1px solid rgba(16, 185, 129, 0.2)",
+          }}
+        >
+          {actionSuccess}
+        </div>
+      )}
 
       {loading && orders.length === 0 ? (
         <div
@@ -428,7 +571,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              Pending ({pendingOrders.length})
+              {ORDER_STATUS_LABELS.pending} ({pendingOrders.length})
             </button>
             <button
               onClick={() => setActiveMobileTab("confirmed")}
@@ -450,7 +593,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              Preparing ({confirmedOrders.length})
+              {ORDER_STATUS_LABELS.confirmed} ({confirmedOrders.length})
             </button>
             <button
               onClick={() => setActiveMobileTab("out_for_delivery")}
@@ -472,7 +615,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              Delivery ({outOrders.length})
+              {ORDER_STATUS_LABELS.out_for_delivery} ({outForDeliveryOrders.length})
             </button>
             <button
               onClick={() => setActiveMobileTab("delivered")}
@@ -494,7 +637,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              Delivered ({deliveredOrders.length})
+              {ORDER_STATUS_LABELS.delivered} ({deliveredOrders.length})
             </button>
           </div>
 
@@ -512,23 +655,14 @@ export default function OrdersPage() {
             {/* COLUMN 1: PENDING */}
             <div
               className={`kanban-column ${activeMobileTab === "pending" ? "active-mobile-tab" : ""}`}
-              onDragOver={(e) => handleDragOver(e, "pending")}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, "pending")}
               style={{
                 display: "flex",
                 flexDirection: "column",
                 gap: "16px",
-                backgroundColor:
-                  draggedOverStatus === "pending"
-                    ? "rgba(234, 179, 8, 0.1)"
-                    : "rgba(0,0,0,0.02)",
+                backgroundColor: "rgba(0,0,0,0.02)",
                 padding: "16px",
                 borderRadius: "12px",
-                border:
-                  draggedOverStatus === "pending"
-                    ? "2px dashed var(--warning)"
-                    : "1px solid var(--border-color)",
+                border: "1px solid var(--border-color)",
                 minWidth: 0,
                 minHeight: 0,
                 maxHeight: "100%",
@@ -554,7 +688,8 @@ export default function OrdersPage() {
                     color: "var(--text-primary)",
                   }}
                 >
-                  <Clock size={18} color="var(--warning)" /> Pending
+                  <Clock size={18} color="var(--warning)" />{" "}
+                  {ORDER_STATUS_LABELS.pending}
                 </h3>
                 <span
                   style={{
@@ -624,23 +759,14 @@ export default function OrdersPage() {
             {/* COLUMN 2: CONFIRMED */}
             <div
               className={`kanban-column ${activeMobileTab === "confirmed" ? "active-mobile-tab" : ""}`}
-              onDragOver={(e) => handleDragOver(e, "confirmed")}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, "confirmed")}
               style={{
                 display: "flex",
                 flexDirection: "column",
                 gap: "16px",
-                backgroundColor:
-                  draggedOverStatus === "confirmed"
-                    ? "rgba(59, 130, 246, 0.1)"
-                    : "rgba(0,0,0,0.02)",
+                backgroundColor: "rgba(0,0,0,0.02)",
                 padding: "16px",
                 borderRadius: "12px",
-                border:
-                  draggedOverStatus === "confirmed"
-                    ? "2px dashed #3b82f6"
-                    : "1px solid var(--border-color)",
+                border: "1px solid var(--border-color)",
                 minWidth: 0,
                 minHeight: 0,
                 maxHeight: "100%",
@@ -666,7 +792,8 @@ export default function OrdersPage() {
                     color: "var(--text-primary)",
                   }}
                 >
-                  <CheckCircle2 size={18} color="#3b82f6" /> Preparing
+                  <CheckCircle2 size={18} color="#3b82f6" />{" "}
+                  {ORDER_STATUS_LABELS.confirmed}
                 </h3>
                 <span
                   style={{
@@ -690,53 +817,60 @@ export default function OrdersPage() {
                   paddingRight: "4px",
                 }}
               >
-                {confirmedOrders.map((order) =>
-                  renderKanbanCard(
+                {confirmedOrders.map((order) => {
+                  const pickupRequest = activePickupForOrder(order.id);
+                  return renderKanbanCard(
                     order,
-                    <button
-                      onClick={() => updateStatus(order.id, "out_for_delivery")}
-                      className="btn-primary"
-                      style={{
-                        width: "100%",
-                        padding: "6px",
-                        fontSize: "12px",
-                        backgroundColor: "#3b82f6",
-                        justifyContent: "center",
-                      }}
-                      disabled={actionLoading !== null}
-                    >
-                      {actionLoading ===
-                      "status_" + order.id + "_out_for_delivery" ? (
-                        <Loader2 size={14} className="animate-spin" />
-                      ) : (
-                        "Mark Out for Delivery"
-                      )}
-                    </button>,
-                  ),
-                )}
+                    pickupRequest ? (
+                      <div
+                        style={{
+                          padding: "7px 10px",
+                          borderRadius: "7px",
+                          textAlign: "center",
+                          color: "#3b82f6",
+                          background: "rgba(59, 130, 246, 0.1)",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                        }}
+                      >
+                        {pickupRequest.status === "driver_assigned"
+                          ? "Partner driver assigned"
+                          : pickupRequest.status === "accepted"
+                            ? "Pickup accepted"
+                            : "Waiting for pickup partner"}
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => void openDispatchModal(order)}
+                        className="btn-primary"
+                        style={{
+                          width: "100%",
+                          padding: "6px",
+                          fontSize: "12px",
+                          backgroundColor: "#3b82f6",
+                          justifyContent: "center",
+                        }}
+                        disabled={actionLoading !== null}
+                      >
+                        Dispatch order
+                      </button>
+                    ),
+                  );
+                })}
               </div>
             </div>
 
             {/* COLUMN 3: OUT FOR DELIVERY */}
             <div
               className={`kanban-column ${activeMobileTab === "out_for_delivery" ? "active-mobile-tab" : ""}`}
-              onDragOver={(e) => handleDragOver(e, "out_for_delivery")}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, "out_for_delivery")}
               style={{
                 display: "flex",
                 flexDirection: "column",
                 gap: "16px",
-                backgroundColor:
-                  draggedOverStatus === "out_for_delivery"
-                    ? "rgba(168, 85, 247, 0.1)"
-                    : "rgba(0,0,0,0.02)",
+                backgroundColor: "rgba(0,0,0,0.02)",
                 padding: "16px",
                 borderRadius: "12px",
-                border:
-                  draggedOverStatus === "out_for_delivery"
-                    ? "2px dashed #a855f7"
-                    : "1px solid var(--border-color)",
+                border: "1px solid var(--border-color)",
                 minWidth: 0,
                 minHeight: 0,
                 maxHeight: "100%",
@@ -762,7 +896,8 @@ export default function OrdersPage() {
                     color: "var(--text-primary)",
                   }}
                 >
-                  <Truck size={18} color="#a855f7" /> Delivery
+                  <Truck size={18} color="#a855f7" />{" "}
+                  {ORDER_STATUS_LABELS.out_for_delivery}
                 </h3>
                 <span
                   style={{
@@ -773,7 +908,7 @@ export default function OrdersPage() {
                     borderRadius: "12px",
                   }}
                 >
-                  {outOrders.length}
+                  {outForDeliveryOrders.length}
                 </span>
               </div>
               <div
@@ -786,26 +921,29 @@ export default function OrdersPage() {
                   paddingRight: "4px",
                 }}
               >
-                {outOrders.map((order) =>
+                {outForDeliveryOrders.map((order) =>
                   renderKanbanCard(
                     order,
                     <button
-                      onClick={() => updateStatus(order.id, "delivered")}
-                      className="btn-primary"
+                      type="button"
+                      onClick={() => setTrackingOrder(order)}
                       style={{
                         width: "100%",
-                        padding: "6px",
+                        padding: "7px 10px",
                         fontSize: "12px",
-                        backgroundColor: "#a855f7",
+                        color: "#a855f7",
+                        backgroundColor: "rgba(168, 85, 247, 0.1)",
+                        border: "1px solid rgba(168, 85, 247, 0.25)",
+                        borderRadius: "7px",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
                         justifyContent: "center",
+                        gap: "6px",
                       }}
-                      disabled={actionLoading !== null}
                     >
-                      {actionLoading === "status_" + order.id + "_delivered" ? (
-                        <Loader2 size={14} className="animate-spin" />
-                      ) : (
-                        "Mark Delivered"
-                      )}
+                      <Navigation size={14} /> Track driver
                     </button>,
                   ),
                 )}
@@ -815,23 +953,14 @@ export default function OrdersPage() {
             {/* COLUMN 4: DELIVERED */}
             <div
               className={`kanban-column ${activeMobileTab === "delivered" ? "active-mobile-tab" : ""}`}
-              onDragOver={(e) => handleDragOver(e, "delivered")}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, "delivered")}
               style={{
                 display: "flex",
                 flexDirection: "column",
                 gap: "16px",
-                backgroundColor:
-                  draggedOverStatus === "delivered"
-                    ? "rgba(16, 185, 129, 0.1)"
-                    : "rgba(0,0,0,0.02)",
+                backgroundColor: "rgba(0,0,0,0.02)",
                 padding: "16px",
                 borderRadius: "12px",
-                border:
-                  draggedOverStatus === "delivered"
-                    ? "2px dashed var(--success)"
-                    : "1px solid var(--border-color)",
+                border: "1px solid var(--border-color)",
                 minWidth: 0,
                 minHeight: 0,
                 maxHeight: "100%",
@@ -857,7 +986,8 @@ export default function OrdersPage() {
                     color: "var(--text-primary)",
                   }}
                 >
-                  <PackageCheck size={18} color="var(--success)" /> Delivered
+                  <PackageCheck size={18} color="var(--success)" />{" "}
+                  {ORDER_STATUS_LABELS.delivered}
                 </h3>
                 <span
                   style={{
@@ -963,9 +1093,9 @@ export default function OrdersPage() {
                   Order #{selectedOrder.id?.slice(-6).toUpperCase()}
                 </h3>
                 <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-                  {new Date(
-                    selectedOrder.createdAt || Date.now(),
-                  ).toLocaleString()}
+                  {selectedOrder.createdAt
+                    ? new Date(selectedOrder.createdAt).toLocaleString()
+                    : "Time unavailable"}
                 </p>
                 <span
                   style={{
@@ -975,23 +1105,23 @@ export default function OrdersPage() {
                     padding: "4px 10px",
                     borderRadius: "12px",
                     fontWeight: "700",
-                    textTransform: "uppercase",
                     backgroundColor:
-                      selectedOrder.status === "pending"
-                        ? "rgba(234, 179, 8, 0.1)"
-                        : selectedOrder.status === "delivered"
-                          ? "rgba(16, 185, 129, 0.1)"
-                          : "rgba(59, 130, 246, 0.1)",
-                    color:
-                      selectedOrder.status === "pending"
-                        ? "var(--warning)"
-                        : selectedOrder.status === "delivered"
-                          ? "var(--success)"
-                          : "#3b82f6",
+                      ORDER_STATUS_STYLES[selectedOrder.status].backgroundColor,
+                    color: ORDER_STATUS_STYLES[selectedOrder.status].color,
                   }}
                 >
-                  {selectedOrder.status.replace(/_/g, " ")}
+                  {ORDER_STATUS_LABELS[selectedOrder.status]}
                 </span>
+                {selectedOrder.status === "out_for_delivery" && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => setTrackingOrder(selectedOrder)}
+                    style={{ marginTop: "12px", padding: "7px 11px", fontSize: "12px" }}
+                  >
+                    <Navigation size={14} /> Track driver
+                  </button>
+                )}
               </div>
               <button
                 onClick={() => setSelectedOrder(null)}
@@ -1138,14 +1268,14 @@ export default function OrdersPage() {
                     </p>
                     <p style={{ fontSize: "14px", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
                       <span>
-                        {formatName(selectedOrder.customerName || selectedOrder.customer?.user?.fullName, selectedOrder.status === "pending")}
+                        {formatName(selectedOrder.customerName || selectedOrder.customer?.user?.fullName || "", selectedOrder.status === "pending")}
                       </span>
                       {" "}
                       {(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber) && (
                         <>
                           <span>•</span>
                           <span>
-                            {formatPhone(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber, selectedOrder.status === "pending")}
+                            {formatPhone(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber || "", selectedOrder.status === "pending")}
                           </span>
                         </>
                       )}
@@ -1233,7 +1363,7 @@ export default function OrdersPage() {
                     gap: "16px",
                   }}
                 >
-                  {(selectedOrder.items || []).map((item: any, idx: number) => (
+                  {(selectedOrder.items || []).map((item, idx) => (
                     <div
                       key={idx}
                       style={{
@@ -1278,18 +1408,15 @@ export default function OrdersPage() {
                             {item.menuItem?.name || item.name || "Item"}
                           </span>
                           <span style={{ fontWeight: "700" }}>
-                            $
-                            {parseFloat(
-                              item.subtotal ||
-                                item.unitPrice ||
-                                item.price ||
-                                0,
-                            ).toFixed(2)}
+                            {formatOrderCurrency(
+                              selectedOrder,
+                              item.subtotal || item.unitPrice || item.price || 0,
+                            )}
                           </span>
                         </div>
                         {item.selectedOptions &&
                           Object.entries(item.selectedOptions).map(
-                            ([key, val]: any) => (
+                            ([key, val]) => (
                               <div
                                 key={key}
                                 style={{
@@ -1310,7 +1437,7 @@ export default function OrdersPage() {
                                     marginTop: "7px",
                                   }}
                                 />
-                                {Array.isArray(val) ? val.join(", ") : val}
+                                {Array.isArray(val) ? val.join(", ") : String(val)}
                               </div>
                             ),
                           )}
@@ -1354,12 +1481,10 @@ export default function OrdersPage() {
               >
                 <span>Subtotal</span>
                 <span>
-                  $
-                  {(
-                    selectedOrder.totalAmount ||
-                    selectedOrder.total ||
-                    0
-                  ).toFixed(2)}
+                  {formatOrderCurrency(
+                    selectedOrder,
+                    selectedOrder.subtotal || selectedOrder.totalAmount || selectedOrder.total || 0,
+                  )}
                 </span>
               </div>
               <div
@@ -1374,15 +1499,188 @@ export default function OrdersPage() {
               >
                 <span>Total</span>
                 <span>
-                  $
-                  {(
-                    selectedOrder.totalAmount ||
-                    selectedOrder.total ||
-                    0
-                  ).toFixed(2)}
+                  {formatOrderCurrency(
+                    selectedOrder,
+                    selectedOrder.totalAmount || selectedOrder.total || 0,
+                  )}
                 </span>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {trackingOrder && (
+        <DriverTrackingModal
+          order={trackingOrder}
+          onClose={() => setTrackingOrder(null)}
+          onOrderStatus={handleTrackedOrderStatus}
+        />
+      )}
+
+      {dispatchOrder && (
+        <div
+          role="presentation"
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.6)",
+            zIndex: 90,
+            display: "grid",
+            placeItems: "center",
+            padding: "20px",
+          }}
+          onClick={() => setDispatchOrder(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dispatch-order-title"
+            className="glass-panel"
+            style={{ width: "100%", maxWidth: "560px", padding: "24px" }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                gap: "16px",
+                marginBottom: "20px",
+              }}
+            >
+              <div>
+                <p style={{ margin: "0 0 4px", color: "var(--text-muted)", fontSize: "12px" }}>
+                  {dispatchOrder.orderNumber || `Order #${dispatchOrder.id?.slice(-6).toUpperCase()}`}
+                </p>
+                <h3 id="dispatch-order-title" style={{ margin: 0, fontSize: "22px" }}>
+                  Choose a delivery handoff
+                </h3>
+              </div>
+              <button
+                type="button"
+                aria-label="Close dispatch options"
+                onClick={() => setDispatchOrder(null)}
+                style={{ border: 0, background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            {actionError && (
+              <div
+                role="alert"
+                style={{
+                  marginBottom: "16px",
+                  padding: "12px",
+                  borderRadius: "10px",
+                  color: "var(--error)",
+                  background: "rgba(239, 68, 68, 0.08)",
+                }}
+              >
+                {actionError}
+              </div>
+            )}
+
+            {loadingDispatchOptions ? (
+              <div style={{ minHeight: "180px", display: "grid", placeItems: "center" }}>
+                <Loader2 className="animate-spin" size={28} color="var(--accent-primary)" />
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: "16px" }}>
+                <section
+                  style={{
+                    padding: "18px",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: "14px",
+                    background: "var(--bg-surface)",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
+                    <UserRound size={20} color="var(--accent-primary)" />
+                    <div>
+                      <strong>Use your own driver</strong>
+                      <p style={{ margin: "2px 0 0", color: "var(--text-muted)", fontSize: "12px" }}>
+                        Assign an available fleet driver and send the order now.
+                      </p>
+                    </div>
+                  </div>
+                  {drivers.length > 0 ? (
+                    <div style={{ display: "flex", gap: "10px", alignItems: "stretch" }} className="flex-col-mobile">
+                      <select
+                        className="form-input"
+                        aria-label="Restaurant driver"
+                        value={selectedDriverId}
+                        onChange={(event) => setSelectedDriverId(event.target.value)}
+                        style={{ flex: 1 }}
+                      >
+                        <option value="">Select an available driver</option>
+                        {drivers.map((driver) => (
+                          <option key={driver.id} value={driver.id} disabled={!driver.isAvailable}>
+                            {driver.fullName || driver.phoneNumber}
+                            {driver.isAvailable ? "" : " — off shift"}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        disabled={!selectedDriverId || actionLoading !== null}
+                        onClick={() => void handleOwnDriverDispatch()}
+                      >
+                        {actionLoading === `dispatch_driver_${dispatchOrder.id}` && (
+                          <Loader2 className="animate-spin" size={17} />
+                        )}
+                        Assign & send
+                      </button>
+                    </div>
+                  ) : (
+                    <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "13px" }}>
+                      No active fleet drivers are available. Invite or activate a driver before using this option.
+                    </p>
+                  )}
+                </section>
+
+                <section
+                  style={{
+                    padding: "18px",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: "14px",
+                    background: "var(--bg-surface)",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
+                    <Building2 size={20} color="#3b82f6" />
+                    <div>
+                      <strong>Use a delivery partner</strong>
+                      <p style={{ margin: "2px 0 0", color: "var(--text-muted)", fontSize: "12px" }}>
+                        Send a pickup request to your connected delivery company.
+                      </p>
+                    </div>
+                  </div>
+                  {deliveryIntegration?.status === "accepted" && deliveryIntegration.company ? (
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      style={{ width: "100%", justifyContent: "center" }}
+                      disabled={actionLoading !== null}
+                      onClick={() => void handlePartnerDispatch()}
+                    >
+                      {actionLoading === `dispatch_partner_${dispatchOrder.id}` && (
+                        <Loader2 className="animate-spin" size={17} />
+                      )}
+                      Request pickup from {deliveryIntegration.company.name}
+                    </button>
+                  ) : (
+                    <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "13px" }}>
+                      {deliveryIntegration?.status === "pending"
+                        ? "Your delivery-company connection is still pending approval."
+                        : "No accepted delivery-company connection is configured."}
+                    </p>
+                  )}
+                </section>
+              </div>
+            )}
           </div>
         </div>
       )}
