@@ -18,6 +18,65 @@ export interface DeliveryZonePoint {
   lng: number;
 }
 
+export type WeekDay =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
+/** Monday-first, matching how the opening-hours editor is read down the page. */
+export const WEEK_DAYS: readonly WeekDay[] = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+] as const;
+
+/**
+ * One day's schedule. A day missing from the array means closed — the API has
+ * no "closed" flag, absence is the signal.
+ */
+export interface OpeningHours {
+  day: WeekDay;
+  is24Hours?: boolean;
+  /** 24h "HH:mm". Ignored by the API when `is24Hours` is set. */
+  openTime?: string | null;
+  closeTime?: string | null;
+}
+
+export interface RestaurantAddress {
+  id?: string;
+  city: string;
+  street: string;
+  building?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
+export interface RestaurantCategory {
+  id: string;
+  name: string;
+}
+
+export type RestaurantStatus =
+  | "active"
+  | "inactive"
+  | "pending"
+  | "rejected"
+  | "suspended";
+
+export interface DeliveryZone {
+  id?: string;
+  name?: string;
+  polygon: DeliveryZonePoint[];
+}
+
 export interface RestaurantProfile {
   id: string;
   name: string;
@@ -32,8 +91,16 @@ export interface RestaurantProfile {
   deliveryTimeRange?: string;
   rating?: number | string;
   totalRatings?: number;
+  /** Computed server-side from `openingHours` in the Beirut timezone. */
   isOpen?: boolean;
   currency: Currency | null;
+  openingHours?: OpeningHours[] | null;
+  restaurantAddress?: RestaurantAddress | null;
+  categories?: RestaurantCategory[];
+  autoSendToDeliveryCompany?: boolean;
+  status?: RestaurantStatus;
+  /** Populated only when `status` is `rejected`. */
+  rejectionReason?: string | null;
 }
 
 export interface RestaurantFullResponse {
@@ -44,17 +111,39 @@ export interface RestaurantFullResponse {
   }>;
 }
 
+export interface UpdateRestaurantAddress {
+  city?: string;
+  street?: string;
+  building?: string;
+  latitude?: number;
+  longitude?: number;
+}
+
+/**
+ * Every field is optional because `PATCH /restaurants/me` is a true partial
+ * update, and each settings tab saves only its own slice. That matters for the
+ * two replace-all fields: sending `categoryIds` or `deliveryZones` wipes
+ * whatever the server currently holds, so a tab that does not own them must
+ * leave them off the payload entirely rather than echo back a stale copy.
+ */
 export interface UpdateRestaurantProfile {
-  name: string;
-  description: string;
-  phone: string;
-  website: string;
-  deliveryFee: number;
-  deliveryTimeMinMinutes: number;
-  deliveryTimeMaxMinutes: number;
-  currencyId: string;
+  name?: string;
+  description?: string;
+  phone?: string;
+  website?: string;
+  deliveryFee?: number;
+  deliveryTimeMinMinutes?: number;
+  deliveryTimeMaxMinutes?: number;
+  currencyId?: string;
   logo?: string;
   backgroundImageUrl?: string;
+  openingHours?: OpeningHours[];
+  restaurantAddress?: UpdateRestaurantAddress;
+  autoSendToDeliveryCompany?: boolean;
+  /** Replaces ALL categories. */
+  categoryIds?: string[];
+  /** Replaces ALL zones; `[]` clears them. */
+  deliveryZones?: DeliveryZone[];
 }
 
 export interface ProfileImageUploadResult {
@@ -139,6 +228,13 @@ export const SettingsService = {
     const { data } = await apiClient.get<
       Currency[] | PaginatedResponse<Currency>
     >("/currencies");
+    return Array.isArray(data) ? data : data.data || [];
+  },
+
+  getRestaurantCategories: async (): Promise<RestaurantCategory[]> => {
+    const { data } = await apiClient.get<
+      RestaurantCategory[] | PaginatedResponse<RestaurantCategory>
+    >("/restaurant-categories", { params: { limit: 100 } });
     return Array.isArray(data) ? data : data.data || [];
   },
 };

@@ -4,8 +4,10 @@ import React, { useEffect, useState } from "react";
 import { Loader2, Plus, Edit2, Trash2, Video } from "lucide-react";
 import { ReelsService } from "@/services/api/reels";
 import ReelModal from "./components/ReelModal";
+import { useI18n } from "@/lib/i18n";
 
 export default function ReelsPage() {
+  const { t } = useI18n();
   const [reels, setReels] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -28,7 +30,7 @@ export default function ReelsPage() {
   };
 
   const handleDelete = async (reelId: string) => {
-    if (confirm("Are you sure you want to delete this reel?")) {
+    if (confirm(t("reels.confirm_delete"))) {
       try {
         await ReelsService.deleteReel(reelId);
         fetchReels();
@@ -55,10 +57,10 @@ export default function ReelsPage() {
           <h1
             style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
           >
-            Reels
+            {t("reels.title")}
           </h1>
           <p style={{ color: "var(--text-secondary)" }}>
-            Engage customers with short video reels.
+            {t("reels.subtitle")}
           </p>
         </div>
         <button
@@ -68,7 +70,7 @@ export default function ReelsPage() {
             setIsModalOpen(true);
           }}
         >
-          <Plus size={20} /> Create Reel
+          <Plus size={20} /> {t("reels.create")}
         </button>
       </header>
 
@@ -88,7 +90,7 @@ export default function ReelsPage() {
           style={{ padding: "40px", textAlign: "center" }}
         >
           <p style={{ color: "var(--text-secondary)" }}>
-            No reels found. Add one to engage your customers.
+            {t("reels.empty")}
           </p>
         </div>
       ) : (
@@ -132,8 +134,7 @@ export default function ReelsPage() {
                   style={{
                     position: "absolute",
                     top: 0,
-                    left: 0,
-                    right: 0,
+                    insetInline: 0,
                     background: "linear-gradient(rgba(0,0,0,0.5), transparent)",
                     padding: "16px",
                     display: "flex",
@@ -148,7 +149,7 @@ export default function ReelsPage() {
                       fontWeight: "600",
                     }}
                   >
-                    {reel.status === 'active' ? 'Active' : 'Hidden'}
+                    {reel.status === 'active' ? t("reels.active") : t("reels.hidden")}
                   </span>
                 </div>
               </div>
@@ -171,12 +172,12 @@ export default function ReelsPage() {
                     minHeight: "40px",
                   }}
                 >
-                  {reel.caption || "No caption"}
+                  {reel.caption || t("reels.no_caption")}
                 </p>
                 
                 {reel.menuItemId && (
                   <div style={{ fontSize: "12px", color: "var(--accent-primary)", fontWeight: "600" }}>
-                    Linked to Menu Item
+                    {t("reels.linked_item")}
                   </div>
                 )}
                 
@@ -189,10 +190,11 @@ export default function ReelsPage() {
                     className="btn-outline"
                     style={{ flex: 1, justifyContent: "center" }}
                   >
-                    <Edit2 size={16} /> Edit
+                    <Edit2 size={16} /> {t("common.edit")}
                   </button>
                   <button
                     onClick={() => handleDelete(reel.id)}
+                    aria-label={t("common.delete")}
                     className="btn-outline"
                     style={{
                       padding: "8px 12px",

@@ -18,11 +18,27 @@ import {
 } from "@/services/api/deliveryTracking";
 import {
   isOrderStatus,
-  ORDER_STATUS_LABELS,
   OrderAddress,
   OrderStatus,
   RestaurantOrder,
 } from "@/services/api/orders";
+import { intlLocale, useI18n, type Locale, type MessageKey } from "@/lib/i18n";
+
+const ORDER_STATUS_KEYS: Record<OrderStatus, MessageKey> = {
+  pending: "order_status.pending",
+  confirmed: "order_status.confirmed",
+  out_for_delivery: "order_status.out_for_delivery",
+  delivered: "order_status.delivered",
+  cancelled: "order_status.cancelled",
+  rejected: "order_status.rejected",
+};
+
+/**
+ * Socket errors are held as a key plus the server's own wording: the socket
+ * effect runs once per order and must not close over `t`, which is a new
+ * function on every render.
+ */
+type TrackingNotice = { key: MessageKey; text?: string } | null;
 
 const DriverTrackingMap = dynamic(() => import("@/components/DriverTrackingMap"), {
   ssr: false,
@@ -78,18 +94,27 @@ const seedDriverLocation = (order: RestaurantOrder): DriverLocation | null => {
   };
 };
 
-function formatLastSeen(timestamp: string | null, now: number) {
-  if (!timestamp) return "Waiting for the driver's first location update";
+function formatLastSeen(
+  timestamp: string | null,
+  now: number,
+  t: (key: MessageKey, vars?: Record<string, string | number>) => string,
+  locale: Locale,
+) {
+  if (!timestamp) return t("tracking.waiting_first_fix");
   const elapsedSeconds = Math.max(
     0,
     Math.floor((now - new Date(timestamp).getTime()) / 1_000),
   );
-  if (!Number.isFinite(elapsedSeconds)) return "Location time unavailable";
-  if (elapsedSeconds < 15) return "Updated just now";
-  if (elapsedSeconds < 60) return `Updated ${elapsedSeconds} seconds ago`;
+  if (!Number.isFinite(elapsedSeconds)) return t("tracking.time_unavailable");
+  if (elapsedSeconds < 15) return t("tracking.updated_now");
+  if (elapsedSeconds < 60)
+    return t("tracking.updated_seconds", { count: elapsedSeconds });
   const minutes = Math.floor(elapsedSeconds / 60);
-  if (minutes < 60) return `Updated ${minutes} minute${minutes === 1 ? "" : "s"} ago`;
-  return `Last update ${new Date(timestamp).toLocaleString()}`;
+  if (minutes === 1) return t("tracking.updated_minute");
+  if (minutes < 60) return t("tracking.updated_minutes", { count: minutes });
+  return t("tracking.last_update", {
+    time: new Date(timestamp).toLocaleString(intlLocale(locale)),
+  });
 }
 
 export default function DriverTrackingModal({
@@ -97,13 +122,14 @@ export default function DriverTrackingModal({
   onClose,
   onOrderStatus,
 }: DriverTrackingModalProps) {
+  const { t, locale } = useI18n();
   const [driverLocation, setDriverLocation] = useState<DriverLocation | null>(
     () => seedDriverLocation(order),
   );
   const [liveStatus, setLiveStatus] = useState<OrderStatus>(order.status);
   const [connectionState, setConnectionState] =
     useState<ConnectionState>("connecting");
-  const [trackingError, setTrackingError] = useState("");
+  const [trackingError, setTrackingError] = useState<TrackingNotice>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const destination = useMemo(
@@ -138,12 +164,15 @@ export default function DriverTrackingModal({
 
       const subscribe = () => {
         setConnectionState("connecting");
-        setTrackingError("");
+        setTrackingError(null);
         activeSocket.emit("track", { orderId: order.id }, (acknowledgement) => {
           if (disposed) return;
           if (acknowledgement?.error) {
             setConnectionState("error");
-            setTrackingError(acknowledgement.error);
+            setTrackingError({
+              key: "tracking.error_unavailable",
+              text: acknowledgement.error,
+            });
             return;
           }
           setConnectionState("live");
@@ -169,23 +198,25 @@ export default function DriverTrackingModal({
       activeSocket.on("error", (payload) => {
         const message = typeof payload === "string" ? payload : payload?.message;
         setConnectionState("error");
-        setTrackingError(message || "Live tracking is unavailable.");
+        setTrackingError({ key: "tracking.error_unavailable", text: message });
       });
       activeSocket.on("connect_error", (error) => {
         setConnectionState("reconnecting");
-        setTrackingError(error.message || "Reconnecting to live tracking…");
+        setTrackingError({
+          key: "tracking.error_reconnecting",
+          text: error.message,
+        });
       });
       activeSocket.on("disconnect", () => {
         if (!disposed) setConnectionState("reconnecting");
       });
       activeSocket.connect();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Live tracking is unavailable.";
+      const message = error instanceof Error ? error.message : "";
       queueMicrotask(() => {
         if (disposed) return;
         setConnectionState("error");
-        setTrackingError(message);
+        setTrackingError({ key: "tracking.error_unavailable", text: message });
       });
     }
 
@@ -204,16 +235,19 @@ export default function DriverTrackingModal({
   const locationAge = timestamp ? now - new Date(timestamp).getTime() : Infinity;
   const isFresh = Number.isFinite(locationAge) && locationAge < 120_000;
   const driver = order.driver;
+  const trackingErrorText = trackingError
+    ? trackingError.text || t(trackingError.key)
+    : "";
   const connectionLabel =
     connectionState === "live"
       ? isFresh
-        ? "Live location"
-        : "Connected"
+        ? t("tracking.live")
+        : t("tracking.connected")
       : connectionState === "reconnecting"
-        ? "Reconnecting"
+        ? t("tracking.reconnecting")
         : connectionState === "error"
-          ? "Tracking unavailable"
-          : "Connecting";
+          ? t("tracking.unavailable")
+          : t("tracking.connecting");
 
   return (
     <div
@@ -253,15 +287,18 @@ export default function DriverTrackingModal({
         >
           <div>
             <p style={{ margin: "0 0 5px", color: "var(--text-muted)", fontSize: "12px" }}>
-              {order.orderNumber || `Order #${order.id.slice(-6).toUpperCase()}`}
+              {order.orderNumber ||
+                t("dispatch.order_fallback", {
+                  code: order.id.slice(-6).toUpperCase(),
+                })}
             </p>
             <h2 id="driver-tracking-title" style={{ margin: 0, fontSize: "24px" }}>
-              Track driver
+              {t("tracking.title")}
             </h2>
           </div>
           <button
             type="button"
-            aria-label="Close driver tracking"
+            aria-label={t("tracking.close")}
             onClick={onClose}
             style={{
               border: 0,
@@ -328,7 +365,7 @@ export default function DriverTrackingModal({
               background: "rgba(168, 85, 247, 0.1)",
             }}
           >
-            {ORDER_STATUS_LABELS[liveStatus]}
+            {t(ORDER_STATUS_KEYS[liveStatus])}
           </span>
           <span
             style={{
@@ -339,11 +376,11 @@ export default function DriverTrackingModal({
               fontSize: "12px",
             }}
           >
-            <Clock3 size={13} /> {formatLastSeen(timestamp, now)}
+            <Clock3 size={13} /> {formatLastSeen(timestamp, now, t, locale)}
           </span>
         </div>
 
-        {trackingError && (
+        {trackingErrorText && (
           <div
             role="alert"
             style={{
@@ -355,7 +392,7 @@ export default function DriverTrackingModal({
               border: "1px solid rgba(239, 68, 68, 0.18)",
             }}
           >
-            {trackingError}
+            {trackingErrorText}
           </div>
         )}
 
@@ -382,9 +419,9 @@ export default function DriverTrackingModal({
           >
             <div>
               <MapPin size={30} style={{ marginBottom: "10px" }} />
-              <p style={{ margin: 0, fontWeight: 700 }}>Waiting for location data</p>
+              <p style={{ margin: 0, fontWeight: 700 }}>{t("tracking.waiting_title")}</p>
               <p style={{ margin: "5px 0 0", fontSize: "13px" }}>
-                The map will appear when the driver app sends its first GPS update.
+                {t("tracking.waiting_body")}
               </p>
             </div>
           </div>
@@ -410,11 +447,11 @@ export default function DriverTrackingModal({
               <Bike size={18} color="var(--accent-primary)" />
               <div>
                 <p style={{ margin: 0, fontWeight: 750 }}>
-                  {driver?.fullName || "Assigned driver"}
+                  {driver?.fullName || t("tracking.assigned_driver")}
                 </p>
                 <p style={{ margin: "3px 0 0", color: "var(--text-secondary)", fontSize: "12px" }}>
                   {[driver?.vehicleType, driver?.vehiclePlate].filter(Boolean).join(" · ") ||
-                    "Vehicle details unavailable"}
+                    t("tracking.vehicle_unavailable")}
                 </p>
               </div>
             </div>
@@ -431,7 +468,7 @@ export default function DriverTrackingModal({
                   fontWeight: 700,
                 }}
               >
-                <Phone size={14} /> Call driver
+                <Phone size={14} /> {t("tracking.call_driver")}
               </a>
             )}
           </div>
@@ -447,7 +484,7 @@ export default function DriverTrackingModal({
             <div style={{ display: "flex", gap: "9px", alignItems: "flex-start" }}>
               <Navigation size={18} color="var(--success)" style={{ flexShrink: 0 }} />
               <div>
-                <p style={{ margin: 0, fontWeight: 750 }}>Delivery destination</p>
+                <p style={{ margin: 0, fontWeight: 750 }}>{t("tracking.destination")}</p>
                 <p style={{ margin: "3px 0 0", color: "var(--text-secondary)", fontSize: "12px", lineHeight: 1.45 }}>
                   {typeof order.deliveryAddress === "string"
                     ? order.deliveryAddress
@@ -457,7 +494,7 @@ export default function DriverTrackingModal({
                         order.deliveryAddress?.city,
                       ]
                         .filter(Boolean)
-                        .join(", ") || "Destination details unavailable"}
+                        .join(", ") || t("tracking.destination_unavailable")}
                 </p>
               </div>
             </div>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Loader2, Plus, Edit2, Trash2 } from 'lucide-react';
 import { MenuService } from '@/services/api/menu';
+import { useI18n } from '@/lib/i18n';
 
 interface OptionGroupsDrawerProps {
   isOpen: boolean;
@@ -10,6 +11,7 @@ interface OptionGroupsDrawerProps {
 }
 
 export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }: OptionGroupsDrawerProps) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(true);
   const [groups, setGroups] = useState<any[]>([]);
 
@@ -58,7 +60,7 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
   };
 
   const deleteGroup = async (groupId: string) => {
-    if (confirm('Are you sure you want to delete this option group?')) {
+    if (confirm(t('options.confirm_delete_group'))) {
       try {
         await MenuService.deleteOptionGroup(groupId);
         fetchGroups();
@@ -85,7 +87,7 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
   };
 
   const deleteOption = async (optionId: string) => {
-    if (confirm('Are you sure you want to delete this option?')) {
+    if (confirm(t('options.confirm_delete_option'))) {
       try {
         await MenuService.deleteOption(optionId);
         fetchGroups();
@@ -102,21 +104,21 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
       {/* Backdrop */}
       <div 
         onClick={onClose}
-        style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 40 }}
+        style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 40 }}
       />
       
       {/* Drawer */}
       <div style={{
-        position: 'fixed', top: 0, right: 0, bottom: 0, width: '100%', maxWidth: '400px',
-        backgroundColor: 'var(--bg-surface)', zIndex: 50, boxShadow: '-4px 0 24px rgba(0,0,0,0.1)',
+        position: 'fixed', top: 0, insetInlineEnd: 0, bottom: 0, width: '100%', maxWidth: '400px',
+        backgroundColor: 'var(--bg-surface)', zIndex: 50, boxShadow: '0 0 24px rgba(0,0,0,0.1)',
         display: 'flex', flexDirection: 'column', overflowY: 'auto'
       }}>
         <div style={{ padding: '20px', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, backgroundColor: 'var(--bg-surface)', zIndex: 2 }}>
           <div>
-            <h2 style={{ fontSize: '20px', fontWeight: '600' }}>Option Groups</h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>For: {itemName}</p>
+            <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{t('options.title')}</h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{t('options.for_item', { name: itemName })}</p>
           </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+          <button onClick={onClose} aria-label={t('common.close')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
             <X size={24} />
           </button>
         </div>
@@ -131,30 +133,30 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
               setIsGroupFormOpen(true);
             }}
           >
-            <Plus size={18} /> Add Option Group
+            <Plus size={18} /> {t('options.add_group')}
           </button>
 
           {isGroupFormOpen && (
             <div className="glass-panel" style={{ padding: '16px', marginBottom: '24px', backgroundColor: 'var(--bg-elevated)' }}>
-              <h4 style={{ marginBottom: '12px', fontWeight: '600' }}>{editingGroup ? 'Edit Group' : 'New Group'}</h4>
+              <h4 style={{ marginBottom: '12px', fontWeight: '600' }}>{editingGroup ? t('options.edit_group') : t('options.new_group')}</h4>
               <input 
-                type="text" className="form-input" placeholder="Group Name (e.g. Choose your size)" 
+                type="text" className="form-input" placeholder={t('options.group_name_placeholder')} 
                 value={groupForm.name} onChange={e => setGroupForm({ ...groupForm, name: e.target.value })}
                 style={{ marginBottom: '12px' }}
               />
               <div style={{ display: 'flex', gap: '12px', marginBottom: '12px' }}>
                 <select className="form-input" value={groupForm.type} onChange={e => setGroupForm({ ...groupForm, type: e.target.value })}>
-                  <option value="radio">Single Choice (Radio)</option>
-                  <option value="checkbox">Multiple Choice (Checkbox)</option>
+                  <option value="radio">{t('options.type_radio')}</option>
+                  <option value="checkbox">{t('options.type_checkbox')}</option>
                 </select>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
                   <input type="checkbox" checked={groupForm.isRequired} onChange={e => setGroupForm({ ...groupForm, isRequired: e.target.checked })} />
-                  Required
+                  {t('options.required')}
                 </label>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
-                <button className="btn-primary" onClick={saveGroup} style={{ flex: 1, justifyContent: 'center' }}>Save</button>
-                <button className="btn-outline" onClick={() => setIsGroupFormOpen(false)} style={{ flex: 1, justifyContent: 'center' }}>Cancel</button>
+                <button className="btn-primary" onClick={saveGroup} style={{ flex: 1, justifyContent: 'center' }}>{t('common.save')}</button>
+                <button className="btn-outline" onClick={() => setIsGroupFormOpen(false)} style={{ flex: 1, justifyContent: 'center' }}>{t('common.cancel')}</button>
               </div>
             </div>
           )}
@@ -164,7 +166,7 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
               <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
             </div>
           ) : groups.length === 0 ? (
-            <p style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>No option groups yet.</p>
+            <p style={{ textAlign: 'center', color: 'var(--text-secondary)' }}>{t('options.empty')}</p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               {groups.map(group => (
@@ -173,7 +175,7 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
                     <div>
                       <h4 style={{ fontWeight: '600' }}>{group.name}</h4>
                       <p style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                        {group.type === 'radio' ? 'Single Choice' : 'Multiple Choice'} • {group.isRequired ? 'Required' : 'Optional'}
+                        {group.type === 'radio' ? t('options.type_radio_short') : t('options.type_checkbox_short')} • {group.isRequired ? t('options.required') : t('options.optional')}
                       </p>
                     </div>
                     <div style={{ display: 'flex', gap: '8px' }}>
@@ -181,8 +183,8 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
                         setEditingGroup(group);
                         setGroupForm({ name: group.name, type: group.type, isRequired: group.isRequired });
                         setIsGroupFormOpen(true);
-                      }} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}><Edit2 size={16} /></button>
-                      <button onClick={() => deleteGroup(group.id)} style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer' }}><Trash2 size={16} /></button>
+                      }} aria-label={t('options.edit_aria', { name: group.name })} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}><Edit2 size={16} /></button>
+                      <button onClick={() => deleteGroup(group.id)} aria-label={t('options.delete_aria', { name: group.name })} style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer' }}><Trash2 size={16} /></button>
                     </div>
                   </div>
                   
@@ -191,7 +193,7 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
                       <div key={option.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px dashed var(--border-color)' }}>
                         <div>
                           <span style={{ fontSize: '14px', fontWeight: '500' }}>{option.name}</span>
-                          {option.price > 0 && <span style={{ fontSize: '14px', color: 'var(--text-secondary)', marginLeft: '8px' }}>+${option.price}</span>}
+                          {option.price > 0 && <span className="force-ltr" style={{ fontSize: '14px', color: 'var(--text-secondary)', marginInlineStart: '8px' }}>+${option.price}</span>}
                         </div>
                         <div style={{ display: 'flex', gap: '8px' }}>
                           <button onClick={() => {
@@ -199,8 +201,8 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
                             setEditingOption(option);
                             setOptionForm({ name: option.name, price: option.price });
                             setIsOptionFormOpen(true);
-                          }} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}><Edit2 size={14} /></button>
-                          <button onClick={() => deleteOption(option.id)} style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer' }}><Trash2 size={14} /></button>
+                          }} aria-label={t('options.edit_aria', { name: option.name })} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}><Edit2 size={14} /></button>
+                          <button onClick={() => deleteOption(option.id)} aria-label={t('options.delete_aria', { name: option.name })} style={{ background: 'none', border: 'none', color: 'var(--error)', cursor: 'pointer' }}><Trash2 size={14} /></button>
                         </div>
                       </div>
                     ))}
@@ -208,12 +210,12 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
                     {isOptionFormOpen && activeGroupId === group.id ? (
                       <div style={{ marginTop: '12px', padding: '12px', backgroundColor: 'var(--bg-elevated)', borderRadius: '8px' }}>
                         <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                          <input type="text" className="form-input" placeholder="Option Name" value={optionForm.name} onChange={e => setOptionForm({ ...optionForm, name: e.target.value })} />
-                          <input type="number" className="form-input" placeholder="Price" style={{ width: '80px' }} value={optionForm.price} onChange={e => setOptionForm({ ...optionForm, price: parseFloat(e.target.value) || 0 })} />
+                          <input type="text" className="form-input" placeholder={t('options.option_name_placeholder')} value={optionForm.name} onChange={e => setOptionForm({ ...optionForm, name: e.target.value })} />
+                          <input type="number" className="form-input" placeholder={t('options.price_placeholder')} style={{ width: '80px' }} value={optionForm.price} onChange={e => setOptionForm({ ...optionForm, price: parseFloat(e.target.value) || 0 })} />
                         </div>
                         <div style={{ display: 'flex', gap: '8px' }}>
-                          <button className="btn-primary" style={{ padding: '4px 12px', fontSize: '12px' }} onClick={saveOption}>Save</button>
-                          <button className="btn-outline" style={{ padding: '4px 12px', fontSize: '12px' }} onClick={() => setIsOptionFormOpen(false)}>Cancel</button>
+                          <button className="btn-primary" style={{ padding: '4px 12px', fontSize: '12px' }} onClick={saveOption}>{t('common.save')}</button>
+                          <button className="btn-outline" style={{ padding: '4px 12px', fontSize: '12px' }} onClick={() => setIsOptionFormOpen(false)}>{t('common.cancel')}</button>
                         </div>
                       </div>
                     ) : (
@@ -226,7 +228,7 @@ export default function OptionGroupsDrawer({ isOpen, onClose, itemId, itemName }
                         }}
                         style={{ background: 'none', border: 'none', color: 'var(--accent-primary)', fontSize: '14px', fontWeight: '500', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', marginTop: '12px', padding: 0 }}
                       >
-                        <Plus size={14} /> Add Option
+                        <Plus size={14} /> {t('options.add_option')}
                       </button>
                     )}
                   </div>

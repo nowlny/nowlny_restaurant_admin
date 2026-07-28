@@ -20,6 +20,7 @@ import { MenuService } from "@/services/api/menu";
 import { SettingsService } from "@/services/api/settings";
 import MenuItemModal from "./components/MenuItemModal";
 import OptionGroupsDrawer from "./components/OptionGroupsDrawer";
+import { useI18n } from "@/lib/i18n";
 
 interface ParsedMenuData {
   name: string;
@@ -42,6 +43,7 @@ interface ParsedMenuData {
 }
 
 export default function MenuPage() {
+  const { t } = useI18n();
   const [restaurantId, setRestaurantId] = useState<string | null>(null);
   const [sections, setSections] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -141,7 +143,7 @@ export default function MenuPage() {
   };
 
   const handleDeleteSection = async (sectionId: string) => {
-    if (confirm("Are you sure you want to delete this section?")) {
+    if (confirm(t("menu.confirm_delete_section"))) {
       try {
         await MenuService.deleteSection(sectionId);
         if (restaurantId) fetchSections(restaurantId);
@@ -152,7 +154,7 @@ export default function MenuPage() {
   };
 
   const handleDeleteItem = async (itemId: string) => {
-    if (confirm("Are you sure you want to delete this item?")) {
+    if (confirm(t("menu.confirm_delete_item"))) {
       try {
         await MenuService.deleteItem(itemId);
         if (restaurantId) fetchSections(restaurantId);
@@ -171,7 +173,7 @@ export default function MenuPage() {
   ) => {
     setIsParsing(true);
     setParseProgress(10);
-    setParsingStep("Establishing bridge connection to Gemini AI...");
+    setParsingStep(t("parser.step_connecting"));
     setParsedData(null);
     setParseSuccess(false);
     setParsingError(null);
@@ -184,15 +186,11 @@ export default function MenuPage() {
         setParseProgress(Math.min(95, currentProgress));
 
         if (currentProgress > 25 && currentProgress <= 45) {
-          setParsingStep("Multimodal vision model parsing files...");
+          setParsingStep(t("parser.step_vision"));
         } else if (currentProgress > 45 && currentProgress <= 70) {
-          setParsingStep(
-            "Running Google Gemini 1.5 Flash OCR on text grids...",
-          );
+          setParsingStep(t("parser.step_ocr"));
         } else if (currentProgress > 70) {
-          setParsingStep(
-            "Structuring extracted dishes into dynamic JSON schemas...",
-          );
+          setParsingStep(t("parser.step_structuring"));
         }
       }
     }, 300);
@@ -215,14 +213,14 @@ export default function MenuPage() {
       if (!response.ok) {
         const errorBody = await response.json();
         throw new Error(
-          errorBody.error || "Failed to scan menu via Gemini API.",
+          errorBody.error || t("parser.scan_failed"),
         );
       }
 
       const parsedResult = await response.json();
 
       setParseProgress(100);
-      setParsingStep("Google Gemini real-time OCR completed successfully!");
+      setParsingStep(t("parser.step_done"));
 
       setTimeout(() => {
         setIsParsing(false);
@@ -347,7 +345,7 @@ export default function MenuPage() {
             if (item.addons && Array.isArray(item.addons) && item.addons.length > 0) {
               const optionGroup = await MenuService.createOptionGroup({
                 menuItemId: newItem.id,
-                name: "Add-ons",
+                name: t("parser.addons_group"),
                 type: "checkbox",
                 isRequired: false,
               });
@@ -373,10 +371,10 @@ export default function MenuPage() {
       setCustomFileName("");
       setParseSuccess(false);
       setLastUploadedFile(null);
-      alert("AI Parsed Menu approved! Items successfully integrated.");
+      alert(t("parser.integrated"));
     } catch (err) {
       console.error(err);
-      alert("An error occurred integrating the menu.");
+      alert(t("parser.integrate_failed"));
     } finally {
       setIsIntegrating(false);
     }
@@ -399,10 +397,10 @@ export default function MenuPage() {
           <h1
             style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
           >
-            Menu Management
+            {t("menu.title")}
           </h1>
           <p style={{ color: "var(--text-secondary)" }}>
-            Organize your sections, items, and option groups.
+            {t("menu.subtitle")}
           </p>
         </div>
         <div
@@ -414,7 +412,7 @@ export default function MenuPage() {
           }}
         >
           <Link className="btn-outline" href="/menu/preview">
-            <Eye size={20} /> Customer Preview
+            <Eye size={20} /> {t("menu.customer_preview")}
           </Link>
           <button
             className="btn-primary"
@@ -424,7 +422,7 @@ export default function MenuPage() {
               setIsSectionModalOpen(true);
             }}
           >
-            <Plus size={20} /> Add Section
+            <Plus size={20} /> {t("menu.add_section")}
           </button>
         </div>
       </header>
@@ -464,11 +462,10 @@ export default function MenuPage() {
               </div>
               <div>
                 <h3 style={{ fontSize: "18px", fontWeight: "700" }}>
-                  AI Menu Uploader & Parser
+                  {t("parser.title")}
                 </h3>
                 <p style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
-                  Import menu lists from PDF flyer, Excel spreadsheets, or
-                  images in seconds!
+                  {t("parser.subtitle")}
                 </p>
               </div>
             </div>
@@ -486,7 +483,7 @@ export default function MenuPage() {
               }}
               className="animate-pulse"
             >
-              Powered by OCR
+              {t("parser.badge")}
             </span>
           </div>
 
@@ -511,7 +508,7 @@ export default function MenuPage() {
                 <AlertCircle size={20} />
                 <div>
                   <p style={{ fontWeight: "700", marginBottom: "4px" }}>
-                    Gemini Parsing Failure
+                    {t("parser.failure_title")}
                   </p>
                   <p
                     style={{ fontSize: "14px", color: "var(--text-secondary)" }}
@@ -535,7 +532,7 @@ export default function MenuPage() {
                     {isParsing && (
                       <Loader2 size={16} className="animate-spin" />
                     )}{" "}
-                    Retry Scan
+                    {t("parser.retry")}
                   </button>
                 )}
                 <button
@@ -543,7 +540,7 @@ export default function MenuPage() {
                   className="btn-outline"
                   style={{ padding: "8px 16px", fontSize: "14px" }}
                 >
-                  Dismiss
+                  {t("parser.dismiss")}
                 </button>
               </div>
             </div>
@@ -567,7 +564,7 @@ export default function MenuPage() {
                 marginBottom: "8px",
               }}
             >
-              ⚙️ Google Gemini AI Credentials
+              {t("parser.credentials")}
             </p>
             <p
               style={{
@@ -576,20 +573,20 @@ export default function MenuPage() {
                 marginBottom: "16px",
               }}
             >
-              Enter your key below to connect directly to the multimodal AI
-              uploader.
+              {t("parser.credentials_hint")}
             </p>
             <input
               type="password"
-              placeholder="Enter Gemini API Key (AIzaSy...)"
+              placeholder={t("parser.api_key_placeholder")}
               value={geminiApiKey}
               onChange={(e) => handleUpdateApiKey(e.target.value)}
               className="form-input"
               style={{ marginBottom: "8px", padding: "10px 14px" }}
             />
             <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-              If you set <code>GEMINI_API_KEY</code> on your server environment,
-              you can leave this blank!
+              {t("parser.api_key_note_before")}
+              <code>GEMINI_API_KEY</code>
+              {t("parser.api_key_note_after")}
             </p>
           </div>
 
@@ -618,7 +615,7 @@ export default function MenuPage() {
               style={{ marginBottom: "16px" }}
             />
             <p style={{ fontWeight: "600", marginBottom: "4px" }}>
-              Drag & drop your store menu file here
+              {t("parser.drop_title")}
             </p>
             <p
               style={{
@@ -627,13 +624,13 @@ export default function MenuPage() {
                 marginBottom: "16px",
               }}
             >
-              PDF, Excel (XLSX, CSV), PNG, JPG up to 10MB
+              {t("parser.drop_hint")}
             </p>
             <div
               className="btn-outline"
               style={{ padding: "8px 16px", fontSize: "14px" }}
             >
-              Browse Files
+              {t("parser.browse")}
             </div>
             <input
               type="file"
@@ -737,12 +734,12 @@ export default function MenuPage() {
                       letterSpacing: "1px",
                     }}
                   >
-                    AI Parsed Menu Preview
+                    {t("parser.preview_title")}
                   </h3>
                   <p
                     style={{ fontSize: "12px", color: "var(--text-secondary)" }}
                   >
-                    Source: {parsedData.name}
+                    {t("parser.source", { name: parsedData.name })}
                   </p>
                 </div>
               </div>
@@ -756,7 +753,7 @@ export default function MenuPage() {
                   borderRadius: "4px",
                 }}
               >
-                Confidence: 98%
+                {t("parser.confidence")}
               </span>
             </div>
 
@@ -785,7 +782,7 @@ export default function MenuPage() {
                       marginBottom: "12px",
                     }}
                   >
-                    <FolderPlus size={16} /> Category: {cat.name}
+                    <FolderPlus size={16} /> {t("parser.category", { name: cat.name })}
                   </h4>
                   <div
                     style={{
@@ -823,8 +820,8 @@ export default function MenuPage() {
                           </p>
                           {item.addons && item.addons.length > 0 && (
                             <div style={{ marginTop: "8px" }}>
-                              <p style={{ fontSize: "12px", fontWeight: "600", color: "#a855f7", marginBottom: "4px" }}>Add-ons:</p>
-                              <ul style={{ fontSize: "11px", color: "var(--text-secondary)", paddingLeft: "16px", margin: 0 }}>
+                              <p style={{ fontSize: "12px", fontWeight: "600", color: "#a855f7", marginBottom: "4px" }}>{t("parser.addons")}</p>
+                              <ul style={{ fontSize: "11px", color: "var(--text-secondary)", paddingInlineStart: "16px", margin: 0 }}>
                                 {item.addons.map((addon, aIdx) => (
                                   <li key={aIdx}>{addon.name} (+${addon.price?.toFixed(2) || "0.00"})</li>
                                 ))}
@@ -836,7 +833,7 @@ export default function MenuPage() {
                           style={{
                             fontWeight: "800",
                             color: "var(--accent-primary)",
-                            marginLeft: "12px",
+                            marginInlineStart: "12px",
                           }}
                         >
                           ${item.price.toFixed(2)}
@@ -867,7 +864,7 @@ export default function MenuPage() {
                 style={{ flex: 1 }}
                 disabled={isIntegrating}
               >
-                Discard
+                {t("parser.discard")}
               </button>
               <button
                 onClick={handleApproveParsedMenu}
@@ -880,7 +877,7 @@ export default function MenuPage() {
                 ) : (
                   <Check size={18} />
                 )}{" "}
-                Approve & Integrate Menu
+                {t("parser.approve")}
               </button>
             </div>
           </div>
@@ -904,7 +901,7 @@ export default function MenuPage() {
               marginBottom: "16px",
             }}
           >
-            {editingSection ? "Edit Section" : "New Section"}
+            {editingSection ? t("menu.edit_section") : t("menu.new_section")}
           </h3>
           <div
             className="flex-col-mobile"
@@ -913,7 +910,7 @@ export default function MenuPage() {
             <input
               type="text"
               className="form-input"
-              placeholder="Section Name (e.g. Appetizers)"
+              placeholder={t("menu.section_name_placeholder")}
               style={{ flex: 1 }}
               value={sectionForm.name}
               onChange={(e) =>
@@ -923,7 +920,7 @@ export default function MenuPage() {
             <input
               type="text"
               className="form-input"
-              placeholder="Description (Optional)"
+              placeholder={t("menu.section_description_placeholder")}
               style={{ flex: 2 }}
               value={sectionForm.description}
               onChange={(e) =>
@@ -933,13 +930,13 @@ export default function MenuPage() {
           </div>
           <div style={{ display: "flex", gap: "16px" }}>
             <button className="btn-primary" onClick={handleSaveSection}>
-              Save Section
+              {t("menu.save_section")}
             </button>
             <button
               className="btn-outline"
               onClick={() => setIsSectionModalOpen(false)}
             >
-              Cancel
+              {t("common.cancel")}
             </button>
           </div>
         </div>
@@ -961,7 +958,7 @@ export default function MenuPage() {
           style={{ padding: "40px", textAlign: "center" }}
         >
           <p style={{ color: "var(--text-secondary)" }}>
-            No menu sections found. Add one to get started.
+            {t("menu.empty")}
           </p>
         </div>
       ) : (
@@ -1017,7 +1014,7 @@ export default function MenuPage() {
                       gap: "4px",
                     }}
                   >
-                    <Edit2 size={16} /> Edit
+                    <Edit2 size={16} /> {t("common.edit")}
                   </button>
                   <button
                     onClick={() => handleDeleteSection(section.id)}
@@ -1031,7 +1028,7 @@ export default function MenuPage() {
                       gap: "4px",
                     }}
                   >
-                    <Trash2 size={16} /> Delete
+                    <Trash2 size={16} /> {t("common.delete")}
                   </button>
                 </div>
               </div>
@@ -1132,7 +1129,7 @@ export default function MenuPage() {
                             justifyContent: "center",
                           }}
                         >
-                          Edit
+                          {t("common.edit")}
                         </button>
                         <button
                           onClick={() => {
@@ -1147,7 +1144,7 @@ export default function MenuPage() {
                             justifyContent: "center",
                           }}
                         >
-                          Options
+                          {t("menu.options")}
                         </button>
                         <button
                           onClick={() => handleDeleteItem(item.id)}
@@ -1181,7 +1178,7 @@ export default function MenuPage() {
                   borderStyle: "dashed",
                 }}
               >
-                <Plus size={18} /> Add Item to {section.name}
+                <Plus size={18} /> {t("menu.add_item_to", { section: section.name })}
               </button>
             </div>
           ))}

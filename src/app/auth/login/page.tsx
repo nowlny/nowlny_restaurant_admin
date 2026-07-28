@@ -1,14 +1,27 @@
 "use client";
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import Cookies from 'js-cookie';
 import { authService } from '@/services/api/auth';
+import { getApiErrorMessage } from '@/services/api/errors';
+import { saveSession } from '@/services/api/session';
+import { useSessionStatus } from '@/lib/useSession';
 import { ChefHat, ArrowRight, Loader2 } from 'lucide-react';
+import { useI18n, type MessageKey } from '@/lib/i18n';
+import ChromeControls from '@/components/ChromeControls';
 import '@/app/globals.css';
+
+/**
+ * Errors are held as a key plus optional server text rather than a finished
+ * string: the operator can flip language while an error is on screen, and a
+ * baked-in English sentence would sit there untranslated until they retried.
+ */
+type LoginError = { key: MessageKey; text?: string } | null;
 
 export default function LoginPage() {
   const router = useRouter();
+  const { t } = useI18n();
+  const sessionStatus = useSessionStatus();
   const [phoneNumber, setPhoneNumber] = useState('');
   
   // OTP code as an array of 4 digits
@@ -17,7 +30,18 @@ export default function LoginPage() {
   
   const [step, setStep] = useState<'PHONE' | 'OTP'>('PHONE');
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<LoginError>(null);
+  const errorText = error ? error.text || t(error.key) : '';
+
+  /**
+   * A signed-in operator who lands here — a bookmark, the back button — is sent
+   * on to the dashboard instead of being asked to authenticate again.
+   */
+  useEffect(() => {
+    if (sessionStatus === 'authenticated') {
+      router.replace('/');
+    }
+  }, [router, sessionStatus]);
 
   const getFullPhoneNumber = () => {
     // Ensure it has the country code
@@ -30,8 +54,8 @@ export default function LoginPage() {
 
   const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    if (!phoneNumber) return setError('Please enter a phone number');
+    setError(null);
+    if (!phoneNumber) return setError({ key: 'login.error_no_phone' });
 
     setIsLoading(true);
     try {
@@ -41,8 +65,11 @@ export default function LoginPage() {
       setTimeout(() => {
         if (codeInputs.current[0]) codeInputs.current[0].focus();
       }, 100);
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to send OTP');
+    } catch (err: unknown) {
+      setError({
+        key: 'login.error_send_failed',
+        text: getApiErrorMessage(err, ''),
+      });
     } finally {
       setIsLoading(false);
     }
@@ -50,28 +77,30 @@ export default function LoginPage() {
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    
+    setError(null);
+
     const fullCode = code.join('');
-    if (fullCode.length !== 4) return setError('Please enter the 4-digit code');
+    if (fullCode.length !== 4) return setError({ key: 'login.error_no_code' });
 
     setIsLoading(true);
     try {
       const res = await authService.verifyOtp(getFullPhoneNumber(), fullCode);
-      
-      if (res.access_token) {
-        Cookies.set('access_token', res.access_token);
-        if (res.refresh_token) {
-          Cookies.set('refresh_token', res.refresh_token);
-        }
-        router.push('/'); // Redirect to dashboard
-      } else if (res.signup_token) {
+      const signupToken = res.signup_token ?? res.signupToken;
+
+      if (saveSession(res)) {
+        router.replace('/'); // Redirect to dashboard
+      } else if (signupToken) {
         // Needs complete signup
-        sessionStorage.setItem('signup_token', res.signup_token);
-        router.push('/auth/complete-signup');
+        sessionStorage.setItem('signup_token', signupToken);
+        router.replace('/auth/complete-signup');
+      } else {
+        setError({ key: 'login.error_no_token' });
       }
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Invalid code');
+    } catch (err: unknown) {
+      setError({
+        key: 'login.error_invalid_code',
+        text: getApiErrorMessage(err, ''),
+      });
     } finally {
       setIsLoading(false);
     }
@@ -116,6 +145,15 @@ export default function LoginPage() {
     }
   };
 
+  // Nobody is asked to sign in until we know they are not already signed in.
+  if (sessionStatus !== 'unauthenticated') {
+    return (
+      <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center' }}>
+        <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
+      </div>
+    );
+  }
+
   return (
     <div style={{
       minHeight: '100vh',
@@ -142,28 +180,36 @@ export default function LoginPage() {
           }}>
             <ChefHat size={32} />
           </div>
-          <h1 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px' }}>Partner Portal</h1>
+          <h1 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px' }}>{t('login.title')}</h1>
           <p style={{ color: 'var(--text-secondary)' }}>
-            {step === 'PHONE' ? 'Enter your phone number to manage your restaurant' : `Enter the 4-digit code sent to ${getFullPhoneNumber()}`}
+            {step === 'PHONE'
+              ? t('login.phone_prompt')
+              : t('login.otp_prompt', { phone: getFullPhoneNumber() })}
           </p>
         </div>
 
-        {error && (
-          <div style={{ 
-            padding: '12px', background: 'rgba(239, 68, 68, 0.1)', 
+        {/* The switches live on the sign-in screen too: an Arabic operator has
+            to be able to change language before they have an account shell. */}
+        <ChromeControls style={{ justifyContent: 'center' }} />
+
+        {errorText && (
+          <div role="alert" style={{
+            padding: '12px', background: 'rgba(239, 68, 68, 0.1)',
             color: 'var(--error)', borderRadius: '8px', fontSize: '14px',
             border: '1px solid rgba(239, 68, 68, 0.2)'
           }}>
-            {error}
+            {errorText}
           </div>
         )}
 
         {step === 'PHONE' ? (
           <form onSubmit={handleRequestOtp} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Phone Number</label>
-              
-              <div style={{
+              <label htmlFor="login-phone" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>{t('login.phone_label')}</label>
+
+              {/* A Lebanese number reads +961 71 234 567 in either language, so
+                  the field stays LTR even when the page is mirrored. */}
+              <div dir="ltr" style={{
                 display: 'flex',
                 background: 'var(--bg-surface)',
                 border: '1px solid var(--border-color)',
@@ -184,15 +230,17 @@ export default function LoginPage() {
                   alignItems: 'center', 
                   padding: '14px 16px',
                   background: 'var(--bg-elevated)',
-                  borderRight: '1px solid var(--border-light)',
+                  borderInlineEnd: '1px solid var(--border-light)',
                   fontWeight: '600',
                   color: 'var(--text-primary)'
                 }}>
                   +961
                 </div>
-                <input 
+                <input
+                  id="login-phone"
                   type="tel"
-                  placeholder="71 234 567"
+                  autoComplete="tel-national"
+                  placeholder={t('login.phone_placeholder')}
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value)}
                   autoFocus
@@ -211,15 +259,16 @@ export default function LoginPage() {
             </div>
             
             <button type="submit" className="btn-primary" disabled={isLoading} style={{ width: '100%', marginTop: '8px' }}>
-              {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Continue'}
-              {!isLoading && <ArrowRight size={20} />}
+              {isLoading ? <Loader2 className="animate-spin" size={20} /> : t('login.continue')}
+              {!isLoading && <ArrowRight size={20} className="flip-in-rtl" />}
             </button>
           </form>
         ) : (
           <form onSubmit={handleVerifyOtp} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
-              <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Verification Code</label>
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+              <p id="login-code-label" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)', margin: 0 }}>{t('login.code_label')}</p>
+              {/* Codes read start-to-right in every locale. */}
+              <div dir="ltr" role="group" aria-labelledby="login-code-label" style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
                 {code.map((digit, idx) => (
                   <input
                     key={idx}
@@ -228,6 +277,8 @@ export default function LoginPage() {
                     }}
                     type="text"
                     inputMode="numeric"
+                    autoComplete={idx === 0 ? 'one-time-code' : 'off'}
+                    aria-label={t('login.code_digit', { index: idx + 1 })}
                     maxLength={4} // Allow paste of full code
                     value={digit}
                     onChange={(e) => handleCodeChange(idx, e.target.value)}
@@ -260,17 +311,18 @@ export default function LoginPage() {
             </div>
 
             <button type="submit" className="btn-primary" disabled={isLoading || code.join('').length !== 4} style={{ width: '100%', marginTop: '16px' }}>
-              {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Verify & Login'}
+              {isLoading ? <Loader2 className="animate-spin" size={20} /> : t('login.verify')}
             </button>
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={() => {
                 setStep('PHONE');
                 setCode(['', '', '', '']);
+                setError(null);
               }}
-              style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', marginTop: '8px' }}
+              style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', marginTop: '8px', fontFamily: 'inherit' }}
             >
-              Change Phone Number
+              {t('login.change_phone')}
             </button>
           </form>
         )}

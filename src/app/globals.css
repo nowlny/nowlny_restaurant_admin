@@ -34,26 +34,29 @@
   --glass-blur: blur(16px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-base: #09090b; /* Very deep sleek dark */
-    --bg-surface: #121214;
-    --bg-elevated: #1a1a1e;
-    
-    --text-primary: #f8fafc;
-    --text-secondary: #94a3b8;
-    --text-muted: #475569;
-    
-    --border-color: rgba(255, 255, 255, 0.08);
-    --border-light: rgba(255, 255, 255, 0.04);
-    
-    --shadow-sm: 0 2px 4px rgba(0,0,0,0.2);
-    --shadow-md: 0 8px 16px rgba(0,0,0,0.4);
-    --shadow-lg: 0 16px 32px rgba(0,0,0,0.5);
-    
-    --glass-bg: rgba(18, 18, 20, 0.6);
-    --glass-border: rgba(255, 255, 255, 0.05);
-  }
+/* The dark palette hangs off a class, not `prefers-color-scheme`, so the
+   operator's choice wins over the OS. The pre-paint script in app/layout.tsx
+   resolves stored-choice-then-OS-preference into this class before the first
+   frame, which is why there is no media query here: by the time anything
+   paints, `dark` is either on <html> or deliberately absent. */
+html.dark {
+  --bg-base: #09090b; /* Very deep sleek dark */
+  --bg-surface: #121214;
+  --bg-elevated: #1a1a1e;
+
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #475569;
+
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.04);
+
+  --shadow-sm: 0 2px 4px rgba(0,0,0,0.2);
+  --shadow-md: 0 8px 16px rgba(0,0,0,0.4);
+  --shadow-lg: 0 16px 32px rgba(0,0,0,0.5);
+
+  --glass-bg: rgba(18, 18, 20, 0.6);
+  --glass-border: rgba(255, 255, 255, 0.05);
 }
 
 html, body {
@@ -65,7 +68,6 @@ html, body {
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 * {
@@ -132,6 +134,66 @@ a {
 .btn-outline:hover {
   background: var(--bg-elevated);
   border-color: var(--text-muted);
+}
+
+/* A disabled button used to keep the full accent fill and the hover lift, so
+   "Add" looked clickable while it was refusing clicks. */
+.btn-primary:disabled,
+.btn-outline:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary:disabled:hover,
+.btn-outline:disabled:hover {
+  transform: none;
+  box-shadow: none;
+  background: var(--accent-primary);
+}
+
+.btn-outline:disabled:hover {
+  background: transparent;
+  border-color: var(--border-color);
+}
+
+/* Square icon-only button — a bare <button> with an SVG in it has no hit area
+   to speak of and no hover feedback. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.icon-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.icon-btn-danger:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--error);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.icon-btn:disabled:hover {
+  background: transparent;
+  border-color: transparent;
 }
 
 .form-input {
@@ -225,13 +287,20 @@ a {
   .mobile-sidebar {
     position: fixed !important;
     top: 0;
-    left: 0;
+    inset-inline-start: 0;
     bottom: 0;
     z-index: 50;
     transform: translateX(-100%);
     transition: transform 0.3s ease;
   }
-  .mobile-sidebar.open {
+  /* The drawer is anchored to the start edge, which is the right edge in
+     Arabic — so it has to slide out the other way. `translateX` is physical,
+     hence the explicit RTL sign flip. */
+  [dir="rtl"] .mobile-sidebar {
+    transform: translateX(100%);
+  }
+  .mobile-sidebar.open,
+  [dir="rtl"] .mobile-sidebar.open {
     transform: translateX(0);
   }
   .main-content {
@@ -241,7 +310,7 @@ a {
     width: 100% !important;
     max-width: 100% !important;
     border-radius: 20px 20px 0 0 !important;
-    border-left: none !important;
+    border-inline-start: none !important;
     margin-top: auto;
     height: 85vh !important;
   }
@@ -273,4 +342,81 @@ a {
   .mobile-only {
     display: none !important;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Right-to-left
+   ---------------------------------------------------------------------------
+   Flexbox and grid mirror themselves once `dir="rtl"` is on <html>. These are
+   the cases that don't: glyphs that encode a direction, and the handful of
+   places that still position with physical offsets.
+--------------------------------------------------------------------------- */
+
+/* Arrows, chevrons and the "back" caret point the other way in Arabic. */
+[dir="rtl"] .flip-in-rtl {
+  transform: scaleX(-1);
+}
+
+/* Phone numbers, prices, times and order codes are read against the POS and
+   the printed receipt, so they stay left-to-right inside an RTL sentence. */
+.force-ltr {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* ---------------------------------------------------------------------------
+   Theme + language controls
+--------------------------------------------------------------------------- */
+
+.chrome-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: 'Outfit', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.chrome-toggle:hover {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.chrome-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-color);
+}
+
+.chrome-segment {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: 'Outfit', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.2s ease, background-color 0.2s ease;
+}
+
+.chrome-segment:hover {
+  color: var(--text-primary);
+}
+
+.chrome-segment[aria-pressed="true"] {
+  background: var(--accent-primary);
+  color: #fff;
 }

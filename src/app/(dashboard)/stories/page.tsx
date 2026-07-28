@@ -5,8 +5,10 @@ import { Loader2, Plus, Edit2, Trash2, Eye } from "lucide-react";
 import { StoriesService } from "@/services/api/stories";
 import { SettingsService } from "@/services/api/settings";
 import StoryModal from "./components/StoryModal";
+import { useI18n } from "@/lib/i18n";
 
 export default function StoriesPage() {
+  const { t } = useI18n();
   const [stories, setStories] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -35,7 +37,7 @@ export default function StoriesPage() {
   };
 
   const handleDelete = async (storyId: string) => {
-    if (confirm("Are you sure you want to delete this story?")) {
+    if (confirm(t("stories.confirm_delete"))) {
       try {
         await StoriesService.deleteStory(storyId);
         fetchStories();
@@ -48,10 +50,10 @@ export default function StoriesPage() {
   const viewCounts = async (storyId: string) => {
     try {
       const data = await StoriesService.getStoryViewers(storyId);
-      alert(`This story has been seen by ${data.count || 0} unique customers.`);
+      alert(t("stories.view_count", { count: data.count || 0 }));
     } catch (err) {
       console.error("Failed to fetch viewers", err);
-      alert("Failed to fetch view count");
+      alert(t("stories.view_count_failed"));
     }
   };
 
@@ -82,10 +84,10 @@ export default function StoriesPage() {
           <h1
             style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
           >
-            Stories
+            {t("stories.title")}
           </h1>
           <p style={{ color: "var(--text-secondary)" }}>
-            Engage customers with active stories.
+            {t("stories.subtitle")}
           </p>
         </div>
         <button
@@ -95,7 +97,7 @@ export default function StoriesPage() {
             setIsModalOpen(true);
           }}
         >
-          <Plus size={20} /> Create Story
+          <Plus size={20} /> {t("stories.create")}
         </button>
       </header>
 
@@ -115,7 +117,7 @@ export default function StoriesPage() {
           style={{ padding: "40px", textAlign: "center" }}
         >
           <p style={{ color: "var(--text-secondary)" }}>
-            No active stories. Add one to engage your customers.
+            {t("stories.empty")}
           </p>
         </div>
       ) : (
@@ -159,7 +161,7 @@ export default function StoriesPage() {
                 ) : (
                   <img
                     src={story.imageUrl}
-                    alt="Story"
+                    alt={story.caption || t("stories.title")}
                     style={{
                       width: "100%",
                       height: "100%",
@@ -171,8 +173,7 @@ export default function StoriesPage() {
                   style={{
                     position: "absolute",
                     top: 0,
-                    left: 0,
-                    right: 0,
+                    insetInline: 0,
                     background: "linear-gradient(rgba(0,0,0,0.5), transparent)",
                     padding: "16px",
                     display: "flex",
@@ -186,7 +187,7 @@ export default function StoriesPage() {
                       fontWeight: "600",
                     }}
                   >
-                    Active
+                    {t("stories.active")}
                   </span>
                   <button
                     onClick={() => viewCounts(story.id)}
@@ -202,7 +203,7 @@ export default function StoriesPage() {
                       cursor: "pointer",
                     }}
                   >
-                    <Eye size={14} /> Views
+                    <Eye size={14} /> {t("stories.views")}
                   </button>
                 </div>
               </div>
@@ -225,7 +226,7 @@ export default function StoriesPage() {
                     minHeight: "40px",
                   }}
                 >
-                  {story.caption || "No caption"}
+                  {story.caption || t("stories.no_caption")}
                 </p>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <button
@@ -236,10 +237,11 @@ export default function StoriesPage() {
                     className="btn-outline"
                     style={{ flex: 1, justifyContent: "center" }}
                   >
-                    <Edit2 size={16} /> Edit
+                    <Edit2 size={16} /> {t("common.edit")}
                   </button>
                   <button
                     onClick={() => handleDelete(story.id)}
+                    aria-label={t("common.delete")}
                     className="btn-outline"
                     style={{
                       padding: "8px 12px",

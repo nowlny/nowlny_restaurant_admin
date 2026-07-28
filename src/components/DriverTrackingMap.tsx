@@ -10,6 +10,7 @@ import {
 } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { useI18n } from "@/lib/i18n";
 
 export interface TrackingPoint {
   latitude: number;
@@ -159,6 +160,7 @@ export default function DriverTrackingMap({
   restaurant,
   restaurantLogo,
 }: DriverTrackingMapProps) {
+  const { t } = useI18n();
   const points = useMemo(
     () => [driver, destination, restaurant].filter(Boolean) as TrackingPoint[],
     [driver, destination, restaurant],
@@ -199,7 +201,7 @@ export default function DriverTrackingMap({
             position={[restaurant.latitude, restaurant.longitude]}
             icon={restaurantIcon}
           >
-            <Popup>Restaurant</Popup>
+            <Popup>{t("tracking.marker_restaurant")}</Popup>
           </Marker>
         )}
         {destination && (
@@ -207,7 +209,7 @@ export default function DriverTrackingMap({
             position={[destination.latitude, destination.longitude]}
             icon={customerIcon}
           >
-            <Popup>Customer</Popup>
+            <Popup>{t("tracking.marker_customer")}</Popup>
           </Marker>
         )}
         {driver && (

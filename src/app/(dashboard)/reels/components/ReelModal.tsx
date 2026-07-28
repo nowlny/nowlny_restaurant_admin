@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Loader2, Upload, Video, Image as ImageIcon } from 'lucide-react';
 import { ReelsService } from '@/services/api/reels';
+import { useI18n } from '@/lib/i18n';
 
 interface ReelModalProps {
   isOpen: boolean;
@@ -10,6 +11,7 @@ interface ReelModalProps {
 }
 
 export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalProps) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [isUploadingVideo, setIsUploadingVideo] = useState(false);
   const [isUploadingThumbnail, setIsUploadingThumbnail] = useState(false);
@@ -73,7 +75,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
         setFormData(prev => ({ ...prev, videoUrl: uploadedUrl }));
       } catch (err) {
         console.error('Failed to upload video', err);
-        alert('Failed to upload video. Please try again.');
+        alert(t('reel.video_upload_failed'));
       } finally {
         setIsUploadingVideo(false);
       }
@@ -89,7 +91,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
         setFormData(prev => ({ ...prev, thumbnailUrl: uploadedUrl }));
       } catch (err) {
         console.error('Failed to upload thumbnail', err);
-        alert('Failed to upload thumbnail. Please try again.');
+        alert(t('reel.thumbnail_upload_failed'));
       } finally {
         setIsUploadingThumbnail(false);
       }
@@ -109,7 +111,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
       onClose();
     } catch (err) {
       console.error('Failed to save reel', err);
-      alert('Failed to save reel');
+      alert(t('reel.save_failed'));
     } finally {
       setLoading(false);
     }
@@ -120,7 +122,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
   return (
     <div style={{ 
       position: 'fixed', 
-      top: 0, left: 0, right: 0, bottom: 0, 
+      inset: 0, 
       backgroundColor: 'rgba(0, 0, 0, 0.7)', 
       backdropFilter: 'blur(4px)',
       zIndex: 100, 
@@ -155,14 +157,15 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
         }}>
           <div>
             <h2 style={{ fontSize: '22px', fontWeight: '700', color: 'var(--text-primary)', margin: 0 }}>
-              {reel ? 'Edit Reel' : 'Create New Reel'}
+              {reel ? t('reel.edit_title') : t('reel.new_title')}
             </h2>
             <p style={{ fontSize: '14px', color: 'var(--text-secondary)', margin: '4px 0 0 0' }}>
-              {reel ? 'Update your video and details below.' : 'Upload a short, engaging video to attract customers.'}
+              {reel ? t('reel.edit_subtitle') : t('reel.new_subtitle')}
             </p>
           </div>
           <button 
             onClick={onClose} 
+            aria-label={t('common.close')}
             style={{ 
               background: 'var(--bg-elevated)', 
               border: 'none', 
@@ -193,7 +196,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
               {/* Video Upload */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <label style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Video <span style={{ color: 'var(--error)' }}>*</span>
+                  {t('reel.video')} <span style={{ color: 'var(--error)' }}>*</span>
                 </label>
                 
                 {formData.videoUrl ? (
@@ -213,7 +216,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                       style={{ 
                         position: 'absolute', 
                         top: '12px', 
-                        right: '12px', 
+                        insetInlineEnd: '12px', 
                         padding: '8px 16px', 
                         fontSize: '13px', 
                         fontWeight: '600',
@@ -229,7 +232,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                       onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.6)'}
                       disabled={isUploadingVideo}
                     >
-                      Replace
+                      {t('reel.replace')}
                     </button>
                   </div>
                 ) : (
@@ -254,7 +257,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                     {isUploadingVideo ? (
                       <>
                         <Loader2 className="animate-spin" size={36} color="var(--accent-primary)" />
-                        <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: '500' }}>Uploading...</span>
+                        <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: '500' }}>{t('reel.uploading')}</span>
                       </>
                     ) : (
                       <>
@@ -266,8 +269,8 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                           <Video size={28} color="var(--accent-primary)" />
                         </div>
                         <div style={{ textAlign: 'center' }}>
-                          <span style={{ display: 'block', color: 'var(--text-primary)', fontSize: '15px', fontWeight: '600' }}>Click to upload</span>
-                          <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>MP4, MOV, WEBM</span>
+                          <span style={{ display: 'block', color: 'var(--text-primary)', fontSize: '15px', fontWeight: '600' }}>{t('reel.click_to_upload')}</span>
+                          <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>{t('reel.video_formats')}</span>
                         </div>
                       </>
                     )}
@@ -285,7 +288,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
               {/* Thumbnail Upload */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <label style={{ fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Thumbnail <span style={{ color: 'var(--error)' }}>*</span>
+                  {t('reel.thumbnail')} <span style={{ color: 'var(--error)' }}>*</span>
                 </label>
                 
                 {formData.thumbnailUrl ? (
@@ -297,7 +300,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                     position: 'relative',
                     border: '1px solid var(--border-color)'
                   }}>
-                    <img src={formData.thumbnailUrl} alt="Thumbnail" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    <img src={formData.thumbnailUrl} alt={t('reel.thumbnail_alt')} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     
                     <button 
                       type="button"
@@ -305,7 +308,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                       style={{ 
                         position: 'absolute', 
                         top: '12px', 
-                        right: '12px', 
+                        insetInlineEnd: '12px', 
                         padding: '8px 16px', 
                         fontSize: '13px', 
                         fontWeight: '600',
@@ -321,7 +324,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                       onMouseLeave={e => e.currentTarget.style.backgroundColor = 'rgba(0,0,0,0.6)'}
                       disabled={isUploadingThumbnail}
                     >
-                      Replace
+                      {t('reel.replace')}
                     </button>
                   </div>
                 ) : (
@@ -346,7 +349,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                     {isUploadingThumbnail ? (
                       <>
                         <Loader2 className="animate-spin" size={36} color="var(--accent-primary)" />
-                        <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: '500' }}>Uploading...</span>
+                        <span style={{ color: 'var(--text-secondary)', fontSize: '14px', fontWeight: '500' }}>{t('reel.uploading')}</span>
                       </>
                     ) : (
                       <>
@@ -358,8 +361,8 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                           <ImageIcon size={28} color="var(--accent-primary)" />
                         </div>
                         <div style={{ textAlign: 'center' }}>
-                          <span style={{ display: 'block', color: 'var(--text-primary)', fontSize: '15px', fontWeight: '600' }}>Click to upload</span>
-                          <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>JPG, PNG</span>
+                          <span style={{ display: 'block', color: 'var(--text-primary)', fontSize: '15px', fontWeight: '600' }}>{t('reel.click_to_upload')}</span>
+                          <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>{t('reel.image_formats')}</span>
                         </div>
                       </>
                     )}
@@ -379,12 +382,12 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
             <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
               <div>
                 <label style={{ display: 'block', marginBottom: '8px', fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                  Caption
+                  {t('reel.caption')}
                 </label>
                 <textarea 
                   className="form-input" 
                   rows={4}
-                  placeholder="Write an engaging caption..."
+                  placeholder={t('reel.caption_placeholder')}
                   value={formData.caption}
                   onChange={e => setFormData({ ...formData, caption: e.target.value })}
                   style={{ 
@@ -402,7 +405,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
               {reel && (
                 <div>
                   <label style={{ display: 'block', marginBottom: '8px', fontSize: '15px', fontWeight: '600', color: 'var(--text-primary)' }}>
-                    Status
+                    {t('reel.status')}
                   </label>
                   <select 
                     className="form-input"
@@ -419,8 +422,8 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                       cursor: 'pointer'
                     }}
                   >
-                    <option value="active">🟢 Active</option>
-                    <option value="hidden">🔴 Hidden</option>
+                    <option value="active">{t('reel.status_active')}</option>
+                    <option value="hidden">{t('reel.status_hidden')}</option>
                   </select>
                 </div>
               )}
@@ -434,7 +437,7 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
                 className="btn-outline" 
                 style={{ flex: 1, padding: '16px', borderRadius: '12px', fontSize: '16px', fontWeight: '600', justifyContent: 'center' }}
               >
-                Cancel
+                {t('common.cancel')}
               </button>
               <button 
                 type="submit" 
@@ -452,10 +455,10 @@ export default function ReelModal({ isOpen, onClose, reel, onSave }: ReelModalPr
               >
                 {loading ? (
                   <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Loader2 className="animate-spin" size={20} /> Saving Reel...
+                    <Loader2 className="animate-spin" size={20} /> {t('reel.saving')}
                   </span>
                 ) : (
-                  'Publish Reel'
+                  t('reel.publish')
                 )}
               </button>
             </div>

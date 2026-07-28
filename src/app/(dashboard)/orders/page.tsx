@@ -16,7 +16,6 @@ import {
 import DriverTrackingModal from "@/components/DriverTrackingModal";
 import {
   DeliveryIntegration,
-  ORDER_STATUS_LABELS,
   OrderStatus,
   OrdersService,
   PickupRequest,
@@ -25,8 +24,29 @@ import {
   RestaurantDriver,
 } from "@/services/api/orders";
 import { getApiErrorMessage } from "@/services/api/errors";
+import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
 
 type BoardOrderStatus = Exclude<OrderStatus, "cancelled" | "rejected">;
+
+const ORDER_STATUS_KEYS: Record<OrderStatus, MessageKey> = {
+  pending: "order_status.pending",
+  confirmed: "order_status.confirmed",
+  out_for_delivery: "order_status.out_for_delivery",
+  delivered: "order_status.delivered",
+  cancelled: "order_status.cancelled",
+  rejected: "order_status.rejected",
+};
+
+/**
+ * Banners are stored as a key plus any server wording rather than a finished
+ * sentence. `fetchOrders` runs on a 15s interval, so it must not close over
+ * `t` — a new closure each render would restart the poll on every pass.
+ */
+type Notice = {
+  key: MessageKey;
+  text?: string;
+  vars?: Record<string, string | number>;
+} | null;
 
 const ORDER_STATUS_STYLES: Record<
   OrderStatus,
@@ -59,13 +79,14 @@ const ORDER_STATUS_STYLES: Record<
 };
 
 export default function OrdersPage() {
+  const { t, locale } = useI18n();
   const [orders, setOrders] = useState<RestaurantOrder[]>([]);
   const [loading, setLoading] = useState(true);
 
   const [selectedOrder, setSelectedOrder] = useState<RestaurantOrder | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [actionError, setActionError] = useState("");
-  const [actionSuccess, setActionSuccess] = useState("");
+  const [actionError, setActionError] = useState<Notice>(null);
+  const [actionSuccess, setActionSuccess] = useState<Notice>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
 
   const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
@@ -113,9 +134,10 @@ export default function OrdersPage() {
         return data.find((order) => order.id === currentOrder.id) ?? currentOrder;
       });
     } catch (fetchError: unknown) {
-      setActionError(
-        getApiErrorMessage(fetchError, "Orders could not be loaded. Please try again."),
-      );
+      setActionError({
+        key: "orders.load_failed",
+        text: getApiErrorMessage(fetchError, ""),
+      });
     } finally {
       if (showLoader) setLoading(false);
     }
@@ -147,15 +169,18 @@ export default function OrdersPage() {
 
   // Status transitions
   const handleAccept = async (orderId: string) => {
-    setActionError("");
-    setActionSuccess("");
+    setActionError(null);
+    setActionSuccess(null);
     setActionLoading("accept_" + orderId);
     try {
       await OrdersService.acceptOrder(orderId);
-      setActionSuccess("Order confirmed and ready for dispatch.");
+      setActionSuccess({ key: "orders.accepted_success" });
       await fetchOrders(false);
     } catch (acceptError: unknown) {
-      setActionError(getApiErrorMessage(acceptError, "Failed to accept this order."));
+      setActionError({
+        key: "orders.accept_failed",
+        text: getApiErrorMessage(acceptError, ""),
+      });
     } finally {
       setActionLoading(null);
     }
@@ -169,17 +194,20 @@ export default function OrdersPage() {
 
   const handleReject = async () => {
     if (!orderToReject || !rejectReason) return;
-    setActionError("");
-    setActionSuccess("");
+    setActionError(null);
+    setActionSuccess(null);
     setActionLoading("reject_" + orderToReject);
     try {
       await OrdersService.rejectOrder(orderToReject, rejectReason);
       setIsRejectModalOpen(false);
       setOrderToReject(null);
-      setActionSuccess("Order rejected and the customer was notified.");
+      setActionSuccess({ key: "orders.rejected_success" });
       await fetchOrders(false);
     } catch (rejectError: unknown) {
-      setActionError(getApiErrorMessage(rejectError, "Failed to reject this order."));
+      setActionError({
+        key: "orders.reject_failed",
+        text: getApiErrorMessage(rejectError, ""),
+      });
     } finally {
       setActionLoading(null);
     }
@@ -189,8 +217,8 @@ export default function OrdersPage() {
     setDispatchOrder(order);
     setSelectedDriverId("");
     setLoadingDispatchOptions(true);
-    setActionError("");
-    setActionSuccess("");
+    setActionError(null);
+    setActionSuccess(null);
 
     try {
       const [driverResult, integrationResult] = await Promise.allSettled([
@@ -207,7 +235,7 @@ export default function OrdersPage() {
       setSelectedDriverId(defaultDriver?.id ?? "");
 
       if (driverResult.status === "rejected" && integrationResult.status === "rejected") {
-        setActionError("Dispatch options could not be loaded. Please try again.");
+        setActionError({ key: "dispatch.options_failed" });
       }
     } finally {
       setLoadingDispatchOptions(false);
@@ -217,17 +245,18 @@ export default function OrdersPage() {
   const handleOwnDriverDispatch = async () => {
     if (!dispatchOrder || !selectedDriverId) return;
     setActionLoading(`dispatch_driver_${dispatchOrder.id}`);
-    setActionError("");
+    setActionError(null);
     try {
       await OrdersService.assignDriver(dispatchOrder.id, selectedDriverId);
       await OrdersService.markOutForDelivery(dispatchOrder.id);
       setDispatchOrder(null);
-      setActionSuccess("Driver assigned and the order is out for delivery.");
+      setActionSuccess({ key: "dispatch.driver_assigned_success" });
       await fetchOrders(false);
     } catch (dispatchError: unknown) {
-      setActionError(
-        getApiErrorMessage(dispatchError, "The driver could not be assigned to this order."),
-      );
+      setActionError({
+        key: "dispatch.driver_assign_failed",
+        text: getApiErrorMessage(dispatchError, ""),
+      });
     } finally {
       setActionLoading(null);
     }
@@ -237,17 +266,21 @@ export default function OrdersPage() {
     const company = deliveryIntegration?.company;
     if (!dispatchOrder || deliveryIntegration?.status !== "accepted" || !company) return;
     setActionLoading(`dispatch_partner_${dispatchOrder.id}`);
-    setActionError("");
+    setActionError(null);
     try {
       const request = await OrdersService.requestPickup(dispatchOrder.id, company.id);
       setPickupRequests((current) => [request, ...current]);
       setDispatchOrder(null);
-      setActionSuccess(`Pickup requested from ${company.name}.`);
+      setActionSuccess({
+        key: "dispatch.pickup_requested",
+        vars: { company: company.name },
+      });
       await fetchOrders(false);
     } catch (dispatchError: unknown) {
-      setActionError(
-        getApiErrorMessage(dispatchError, "The delivery pickup could not be requested."),
-      );
+      setActionError({
+        key: "dispatch.pickup_failed",
+        text: getApiErrorMessage(dispatchError, ""),
+      });
     } finally {
       setActionLoading(null);
     }
@@ -270,6 +303,10 @@ export default function OrdersPage() {
   );
   const deliveredOrders = orders.filter((o) => o.status === "delivered");
 
+  const noticeText = (notice: Notice) =>
+    notice ? notice.text || t(notice.key, notice.vars) : "";
+  const statusLabel = (status: OrderStatus) => t(ORDER_STATUS_KEYS[status]);
+
   const formatOrderCurrency = (
     order: RestaurantOrder,
     value: number | string | undefined,
@@ -277,7 +314,7 @@ export default function OrdersPage() {
     const currency = order.restaurant?.currency;
     const code = currency?.code ?? "USD";
     try {
-      return new Intl.NumberFormat("en-US", {
+      return new Intl.NumberFormat(intlLocale(locale), {
         style: "currency",
         currency: code,
       }).format(Number(value || 0));
@@ -341,11 +378,11 @@ export default function OrdersPage() {
             </h4>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
               {order.createdAt
-                ? new Date(order.createdAt).toLocaleTimeString([], {
+                ? new Date(order.createdAt).toLocaleTimeString(intlLocale(locale), {
                     hour: "2-digit",
                     minute: "2-digit",
                   })
-                : "Time unavailable"}
+                : t("orders.time_unavailable")}
             </p>
           </div>
           <div style={{ fontWeight: "800", color: "var(--accent-primary)" }}>
@@ -354,7 +391,10 @@ export default function OrdersPage() {
         </div>
 
         <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-          {order.items?.length || 0} items • {order.paymentMethod || "Cash"}
+          {t("orders.items_and_payment", {
+            count: order.items?.length || 0,
+            payment: order.paymentMethod || t("orders.payment_cash"),
+          })}
         </div>
 
         {order.customerNotes && (
@@ -402,14 +442,14 @@ export default function OrdersPage() {
     if (!address) return "";
     if (typeof address === "string") return isPending ? "****" : address;
     if (isPending) {
-      return `${address.city || "Unknown City"}, ****`;
+      return `${address.city || t("orders.address_unknown_city")}, ****`;
     }
     const parts = [];
-    if (address.building) parts.push(`Bldg ${address.building}`);
-    if (address.floor) parts.push(`Floor ${address.floor}`);
+    if (address.building) parts.push(t("orders.address_building", { value: address.building }));
+    if (address.floor) parts.push(t("orders.address_floor", { value: address.floor }));
     if (address.street) parts.push(address.street);
     if (address.city) parts.push(address.city);
-    return parts.join(", ") || "Address provided on map";
+    return parts.join(", ") || t("orders.address_on_map");
   };
 
   const formatName = (name: string, isPending: boolean) => {
@@ -454,10 +494,10 @@ export default function OrdersPage() {
           <h1
             style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
           >
-            Active Orders Board
+            {t("orders.title")}
           </h1>
           <p style={{ color: "var(--text-secondary)" }}>
-            Manage your kitchen workflow and delivery handoffs.
+            {t("orders.subtitle")}
           </p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -484,8 +524,13 @@ export default function OrdersPage() {
               }}
             />
             {lastSyncedAt
-              ? `Updated ${lastSyncedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-              : "Checking orders"}
+              ? t("orders.updated_at", {
+                  time: lastSyncedAt.toLocaleTimeString(intlLocale(locale), {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  }),
+                })
+              : t("orders.checking")}
           </div>
         </div>
       </header>
@@ -501,7 +546,7 @@ export default function OrdersPage() {
             border: "1px solid rgba(239, 68, 68, 0.2)",
           }}
         >
-          {actionError}
+          {noticeText(actionError)}
         </div>
       )}
       {actionSuccess && (
@@ -515,7 +560,7 @@ export default function OrdersPage() {
             border: "1px solid rgba(16, 185, 129, 0.2)",
           }}
         >
-          {actionSuccess}
+          {noticeText(actionSuccess)}
         </div>
       )}
 
@@ -571,7 +616,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              {ORDER_STATUS_LABELS.pending} ({pendingOrders.length})
+              {statusLabel("pending")} ({pendingOrders.length})
             </button>
             <button
               onClick={() => setActiveMobileTab("confirmed")}
@@ -593,7 +638,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              {ORDER_STATUS_LABELS.confirmed} ({confirmedOrders.length})
+              {statusLabel("confirmed")} ({confirmedOrders.length})
             </button>
             <button
               onClick={() => setActiveMobileTab("out_for_delivery")}
@@ -615,7 +660,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              {ORDER_STATUS_LABELS.out_for_delivery} ({outForDeliveryOrders.length})
+              {statusLabel("out_for_delivery")} ({outForDeliveryOrders.length})
             </button>
             <button
               onClick={() => setActiveMobileTab("delivered")}
@@ -637,7 +682,7 @@ export default function OrdersPage() {
                 border: "none",
               }}
             >
-              {ORDER_STATUS_LABELS.delivered} ({deliveredOrders.length})
+              {statusLabel("delivered")} ({deliveredOrders.length})
             </button>
           </div>
 
@@ -689,7 +734,7 @@ export default function OrdersPage() {
                   }}
                 >
                   <Clock size={18} color="var(--warning)" />{" "}
-                  {ORDER_STATUS_LABELS.pending}
+                  {statusLabel("pending")}
                 </h3>
                 <span
                   style={{
@@ -730,7 +775,7 @@ export default function OrdersPage() {
                         }}
                         disabled={actionLoading !== null}
                       >
-                        Reject
+                        {t("orders.reject")}
                       </button>
                       <button
                         onClick={() => handleAccept(order.id)}
@@ -747,7 +792,7 @@ export default function OrdersPage() {
                         {actionLoading === "accept_" + order.id ? (
                           <Loader2 size={14} className="animate-spin" />
                         ) : (
-                          "Accept"
+                          t("orders.accept")
                         )}
                       </button>
                     </div>,
@@ -793,7 +838,7 @@ export default function OrdersPage() {
                   }}
                 >
                   <CheckCircle2 size={18} color="#3b82f6" />{" "}
-                  {ORDER_STATUS_LABELS.confirmed}
+                  {statusLabel("confirmed")}
                 </h3>
                 <span
                   style={{
@@ -834,10 +879,10 @@ export default function OrdersPage() {
                         }}
                       >
                         {pickupRequest.status === "driver_assigned"
-                          ? "Partner driver assigned"
+                          ? t("orders.partner_driver_assigned")
                           : pickupRequest.status === "accepted"
-                            ? "Pickup accepted"
-                            : "Waiting for pickup partner"}
+                            ? t("orders.pickup_accepted")
+                            : t("orders.waiting_for_partner")}
                       </div>
                     ) : (
                       <button
@@ -852,7 +897,7 @@ export default function OrdersPage() {
                         }}
                         disabled={actionLoading !== null}
                       >
-                        Dispatch order
+                        {t("orders.dispatch")}
                       </button>
                     ),
                   );
@@ -897,7 +942,7 @@ export default function OrdersPage() {
                   }}
                 >
                   <Truck size={18} color="#a855f7" />{" "}
-                  {ORDER_STATUS_LABELS.out_for_delivery}
+                  {statusLabel("out_for_delivery")}
                 </h3>
                 <span
                   style={{
@@ -943,7 +988,7 @@ export default function OrdersPage() {
                         gap: "6px",
                       }}
                     >
-                      <Navigation size={14} /> Track driver
+                      <Navigation size={14} /> {t("orders.track_driver")}
                     </button>,
                   ),
                 )}
@@ -987,7 +1032,7 @@ export default function OrdersPage() {
                   }}
                 >
                   <PackageCheck size={18} color="var(--success)" />{" "}
-                  {ORDER_STATUS_LABELS.delivered}
+                  {statusLabel("delivered")}
                 </h3>
                 <span
                   style={{
@@ -1029,7 +1074,7 @@ export default function OrdersPage() {
                         borderRadius: "6px",
                       }}
                     >
-                      <CheckCircle2 size={14} /> Completed
+                      <CheckCircle2 size={14} /> {t("orders.completed")}
                     </div>,
                   ),
                 )}
@@ -1064,7 +1109,7 @@ export default function OrdersPage() {
               height: "100%",
               borderRadius: "0",
               backgroundColor: "var(--bg-base)",
-              borderLeft: "1px solid var(--border-color)",
+              borderInlineStart: "1px solid var(--border-color)",
               display: "flex",
               flexDirection: "column",
               animation: "slideInRight 0.3s ease",
@@ -1090,12 +1135,14 @@ export default function OrdersPage() {
                     marginBottom: "4px",
                   }}
                 >
-                  Order #{selectedOrder.id?.slice(-6).toUpperCase()}
+                  {t("orders.detail_title", {
+                    code: selectedOrder.id?.slice(-6).toUpperCase() ?? "",
+                  })}
                 </h3>
                 <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
                   {selectedOrder.createdAt
-                    ? new Date(selectedOrder.createdAt).toLocaleString()
-                    : "Time unavailable"}
+                    ? new Date(selectedOrder.createdAt).toLocaleString(intlLocale(locale))
+                    : t("orders.time_unavailable")}
                 </p>
                 <span
                   style={{
@@ -1110,7 +1157,7 @@ export default function OrdersPage() {
                     color: ORDER_STATUS_STYLES[selectedOrder.status].color,
                   }}
                 >
-                  {ORDER_STATUS_LABELS[selectedOrder.status]}
+                  {statusLabel(selectedOrder.status)}
                 </span>
                 {selectedOrder.status === "out_for_delivery" && (
                   <button
@@ -1119,7 +1166,7 @@ export default function OrdersPage() {
                     onClick={() => setTrackingOrder(selectedOrder)}
                     style={{ marginTop: "12px", padding: "7px 11px", fontSize: "12px" }}
                   >
-                    <Navigation size={14} /> Track driver
+                    <Navigation size={14} /> {t("orders.track_driver")}
                   </button>
                 )}
               </div>
@@ -1196,7 +1243,7 @@ export default function OrdersPage() {
                         zIndex: 10,
                       }}
                     >
-                      Accept order to view exact location
+                      {t("orders.map_locked")}
                     </div>
                   )}
                 </div>
@@ -1222,7 +1269,7 @@ export default function OrdersPage() {
                       fontWeight: "700",
                     }}
                   >
-                    Payment
+                    {t("orders.payment")}
                   </p>
                   <p style={{ fontSize: "14px", fontWeight: "600" }}>
                     {selectedOrder.paymentMethod}
@@ -1238,7 +1285,7 @@ export default function OrdersPage() {
                       fontWeight: "700",
                     }}
                   >
-                    Status
+                    {t("orders.payment_status")}
                   </p>
                   <p
                     style={{
@@ -1264,7 +1311,7 @@ export default function OrdersPage() {
                         fontWeight: "700",
                       }}
                     >
-                      Customer
+                      {t("orders.customer")}
                     </p>
                     <p style={{ fontSize: "14px", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
                       <span>
@@ -1274,7 +1321,7 @@ export default function OrdersPage() {
                       {(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber) && (
                         <>
                           <span>•</span>
-                          <span>
+                          <span className="force-ltr">
                             {formatPhone(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber || "", selectedOrder.status === "pending")}
                           </span>
                         </>
@@ -1293,7 +1340,7 @@ export default function OrdersPage() {
                         fontWeight: "700",
                       }}
                     >
-                      Delivery Address
+                      {t("orders.delivery_address")}
                     </p>
                     <p
                       style={{
@@ -1329,7 +1376,7 @@ export default function OrdersPage() {
                     }}
                   >
                     <AlertCircle size={18} />
-                    Customer Note
+                    {t("orders.customer_note")}
                   </div>
                   <p
                     style={{
@@ -1354,7 +1401,7 @@ export default function OrdersPage() {
                     paddingBottom: "8px",
                   }}
                 >
-                  Order Items
+                  {t("orders.items")}
                 </h4>
                 <div
                   style={{
@@ -1405,7 +1452,7 @@ export default function OrdersPage() {
                           }}
                         >
                           <span style={{ fontWeight: "600", fontSize: "15px" }}>
-                            {item.menuItem?.name || item.name || "Item"}
+                            {item.menuItem?.name || item.name || t("orders.item_fallback")}
                           </span>
                           <span style={{ fontWeight: "700" }}>
                             {formatOrderCurrency(
@@ -1452,7 +1499,7 @@ export default function OrdersPage() {
                               borderRadius: "6px",
                             }}
                           >
-                            <strong>Note:</strong> {item.notes}
+                            <strong>{t("orders.item_note")}</strong> {item.notes}
                           </div>
                         )}
                       </div>
@@ -1479,7 +1526,7 @@ export default function OrdersPage() {
                   color: "var(--text-secondary)",
                 }}
               >
-                <span>Subtotal</span>
+                <span>{t("orders.subtotal")}</span>
                 <span>
                   {formatOrderCurrency(
                     selectedOrder,
@@ -1497,7 +1544,7 @@ export default function OrdersPage() {
                   color: "var(--accent-primary)",
                 }}
               >
-                <span>Total</span>
+                <span>{t("orders.total")}</span>
                 <span>
                   {formatOrderCurrency(
                     selectedOrder,
@@ -1551,15 +1598,18 @@ export default function OrdersPage() {
             >
               <div>
                 <p style={{ margin: "0 0 4px", color: "var(--text-muted)", fontSize: "12px" }}>
-                  {dispatchOrder.orderNumber || `Order #${dispatchOrder.id?.slice(-6).toUpperCase()}`}
+                  {dispatchOrder.orderNumber ||
+                    t("dispatch.order_fallback", {
+                      code: dispatchOrder.id?.slice(-6).toUpperCase() ?? "",
+                    })}
                 </p>
                 <h3 id="dispatch-order-title" style={{ margin: 0, fontSize: "22px" }}>
-                  Choose a delivery handoff
+                  {t("dispatch.title")}
                 </h3>
               </div>
               <button
                 type="button"
-                aria-label="Close dispatch options"
+                aria-label={t("dispatch.close")}
                 onClick={() => setDispatchOrder(null)}
                 style={{ border: 0, background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}
               >
@@ -1578,7 +1628,7 @@ export default function OrdersPage() {
                   background: "rgba(239, 68, 68, 0.08)",
                 }}
               >
-                {actionError}
+                {noticeText(actionError)}
               </div>
             )}
 
@@ -1599,9 +1649,9 @@ export default function OrdersPage() {
                   <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
                     <UserRound size={20} color="var(--accent-primary)" />
                     <div>
-                      <strong>Use your own driver</strong>
+                      <strong>{t("dispatch.own_driver")}</strong>
                       <p style={{ margin: "2px 0 0", color: "var(--text-muted)", fontSize: "12px" }}>
-                        Assign an available fleet driver and send the order now.
+                        {t("dispatch.own_driver_hint")}
                       </p>
                     </div>
                   </div>
@@ -1609,16 +1659,16 @@ export default function OrdersPage() {
                     <div style={{ display: "flex", gap: "10px", alignItems: "stretch" }} className="flex-col-mobile">
                       <select
                         className="form-input"
-                        aria-label="Restaurant driver"
+                        aria-label={t("dispatch.driver_select_label")}
                         value={selectedDriverId}
                         onChange={(event) => setSelectedDriverId(event.target.value)}
                         style={{ flex: 1 }}
                       >
-                        <option value="">Select an available driver</option>
+                        <option value="">{t("dispatch.driver_select_placeholder")}</option>
                         {drivers.map((driver) => (
                           <option key={driver.id} value={driver.id} disabled={!driver.isAvailable}>
                             {driver.fullName || driver.phoneNumber}
-                            {driver.isAvailable ? "" : " — off shift"}
+                            {driver.isAvailable ? "" : t("dispatch.driver_off_shift")}
                           </option>
                         ))}
                       </select>
@@ -1631,12 +1681,12 @@ export default function OrdersPage() {
                         {actionLoading === `dispatch_driver_${dispatchOrder.id}` && (
                           <Loader2 className="animate-spin" size={17} />
                         )}
-                        Assign & send
+                        {t("dispatch.assign_and_send")}
                       </button>
                     </div>
                   ) : (
                     <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "13px" }}>
-                      No active fleet drivers are available. Invite or activate a driver before using this option.
+                      {t("dispatch.no_drivers")}
                     </p>
                   )}
                 </section>
@@ -1652,9 +1702,9 @@ export default function OrdersPage() {
                   <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
                     <Building2 size={20} color="#3b82f6" />
                     <div>
-                      <strong>Use a delivery partner</strong>
+                      <strong>{t("dispatch.partner")}</strong>
                       <p style={{ margin: "2px 0 0", color: "var(--text-muted)", fontSize: "12px" }}>
-                        Send a pickup request to your connected delivery company.
+                        {t("dispatch.partner_hint")}
                       </p>
                     </div>
                   </div>
@@ -1669,13 +1719,15 @@ export default function OrdersPage() {
                       {actionLoading === `dispatch_partner_${dispatchOrder.id}` && (
                         <Loader2 className="animate-spin" size={17} />
                       )}
-                      Request pickup from {deliveryIntegration.company.name}
+                      {t("dispatch.request_pickup", {
+                        company: deliveryIntegration.company.name,
+                      })}
                     </button>
                   ) : (
                     <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "13px" }}>
                       {deliveryIntegration?.status === "pending"
-                        ? "Your delivery-company connection is still pending approval."
-                        : "No accepted delivery-company connection is configured."}
+                        ? t("dispatch.partner_pending")
+                        : t("dispatch.partner_none")}
                     </p>
                   )}
                 </section>
@@ -1717,7 +1769,7 @@ export default function OrdersPage() {
                 marginBottom: "16px",
               }}
             >
-              Reject Order
+              {t("reject.title")}
             </h3>
             <p
               style={{
@@ -1726,13 +1778,12 @@ export default function OrdersPage() {
                 fontSize: "14px",
               }}
             >
-              Please provide a reason for rejecting this order. The customer
-              will see this message.
+              {t("reject.body")}
             </p>
             <textarea
               className="form-input"
               rows={4}
-              placeholder="e.g. Item out of stock"
+              placeholder={t("reject.placeholder")}
               value={rejectReason}
               onChange={(e) => setRejectReason(e.target.value)}
               style={{ marginBottom: "24px" }}
@@ -1744,7 +1795,7 @@ export default function OrdersPage() {
                 onClick={() => setIsRejectModalOpen(false)}
                 disabled={actionLoading !== null}
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button
                 className="btn-primary"
@@ -1760,7 +1811,7 @@ export default function OrdersPage() {
                 {actionLoading === "reject_" + orderToReject ? (
                   <Loader2 size={18} className="animate-spin" />
                 ) : null}{" "}
-                Confirm Reject
+                {t("reject.confirm")}
               </button>
             </div>
           </div>
@@ -1772,6 +1823,15 @@ export default function OrdersPage() {
           __html: `
         @keyframes slideInRight {
           from { transform: translateX(100%); }
+          to { transform: translateX(0); }
+        }
+        /* The drawer docks to the end edge, which is the left in Arabic, so
+           the entrance has to come from the other side. */
+        [dir="rtl"] .mobile-full-width {
+          animation-name: slideInLeft !important;
+        }
+        @keyframes slideInLeft {
+          from { transform: translateX(-100%); }
           to { transform: translateX(0); }
         }
         @keyframes scaleIn {

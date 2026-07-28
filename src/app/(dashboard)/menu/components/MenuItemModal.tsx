@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Loader2 } from 'lucide-react';
 import { MenuService } from '@/services/api/menu';
+import { useI18n } from '@/lib/i18n';
 
 interface MenuItemModalProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface MenuItemModalProps {
 }
 
 export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave }: MenuItemModalProps) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
@@ -65,7 +67,7 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
       onClose();
     } catch (error) {
       console.error('Failed to save menu item', error);
-      alert('Failed to save menu item');
+      alert(t('item.save_failed'));
     } finally {
       setLoading(false);
     }
@@ -73,21 +75,21 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
 
   return (
     <div style={{
-      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      position: 'fixed', inset: 0,
       backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 50,
       display: 'flex', alignItems: 'center', justifyContent: 'center'
     }}>
       <div className="glass-panel" style={{ width: '100%', maxWidth: '500px', padding: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{item ? 'Edit Item' : 'Add Item'}</h2>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{item ? t('item.edit_title') : t('item.add_title')}</h2>
+          <button onClick={onClose} aria-label={t('common.close')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
             <X size={24} />
           </button>
         </div>
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Name *</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.name')} *</label>
             <input 
               required 
               type="text" 
@@ -98,7 +100,7 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
           </div>
 
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Description</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.description')}</label>
             <textarea 
               className="form-input" 
               rows={3}
@@ -109,7 +111,7 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
 
           <div style={{ display: 'flex', gap: '16px' }}>
             <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Price *</label>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.price')} *</label>
               <input 
                 required 
                 type="number" 
@@ -120,7 +122,7 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
               />
             </div>
             <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Discounted Price</label>
+              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.discounted_price')}</label>
               <input 
                 type="number" 
                 step="0.01"
@@ -132,7 +134,7 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
           </div>
 
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Image URL</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.image_url')}</label>
             <input 
               type="url" 
               className="form-input" 
@@ -148,7 +150,7 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
                 checked={formData.isActive}
                 onChange={e => setFormData({ ...formData, isActive: e.target.checked })}
               />
-              Active
+              {t('item.active')}
             </label>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
               <input 
@@ -156,12 +158,12 @@ export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave
                 checked={formData.isAvailable}
                 onChange={e => setFormData({ ...formData, isAvailable: e.target.checked })}
               />
-              Available (in stock)
+              {t('item.available')}
             </label>
           </div>
 
           <button type="submit" disabled={loading} className="btn-primary" style={{ marginTop: '16px', justifyContent: 'center' }}>
-            {loading ? <Loader2 className="animate-spin" size={20} /> : 'Save Item'}
+            {loading ? <Loader2 className="animate-spin" size={20} /> : t('item.save')}
           </button>
         </form>
       </div>

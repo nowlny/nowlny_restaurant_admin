@@ -28,7 +28,12 @@ import {
   SettingsService,
 } from "@/services/api/settings";
 import { getApiErrorMessage } from "@/services/api/errors";
+import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
 import styles from "./preview.module.css";
+
+/** Key + optional server text — `loadPreview` is a stable callback used by an
+ *  effect, so it must not close over `t`. */
+type Notice = { key: MessageKey; text?: string } | null;
 
 interface PreviewSection extends MenuSection {
   items: MenuItem[];
@@ -48,6 +53,7 @@ const getDiscount = (item: MenuItem) => {
 };
 
 export default function MenuPreviewPage() {
+  const { t, locale } = useI18n();
   const [restaurant, setRestaurant] = useState<RestaurantProfile | null>(null);
   const [sections, setSections] = useState<PreviewSection[]>([]);
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
@@ -56,7 +62,7 @@ export default function MenuPreviewPage() {
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState<Notice>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const sectionRefs = useRef<Record<string, HTMLElement | null>>({});
   const optionRequestId = useRef(0);
@@ -71,7 +77,7 @@ export default function MenuPreviewPage() {
   const loadPreview = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
-    setError("");
+    setError(null);
 
     try {
       const profile = await SettingsService.getOwnRestaurant();
@@ -99,12 +105,10 @@ export default function MenuPreviewPage() {
       setSections(customerVisibleSections);
       setActiveSectionId(customerVisibleSections[0]?.id ?? null);
     } catch (previewError: unknown) {
-      setError(
-        getApiErrorMessage(
-          previewError,
-          "We could not load the customer menu preview.",
-        ),
-      );
+      setError({
+        key: "preview.load_failed",
+        text: getApiErrorMessage(previewError, ""),
+      });
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -141,7 +145,7 @@ export default function MenuPreviewPage() {
 
     if (currencyCode === "USD") return `$${amount.toFixed(2)}`;
     if (currencyCode === "LBP") {
-      return `${Math.round(amount).toLocaleString("en-US")} L.L.`;
+      return `${Math.round(amount).toLocaleString(intlLocale(locale))} L.L.`;
     }
 
     return `${amount.toFixed(2)} ${restaurant?.currency?.symbol || currencyCode}`;
@@ -198,8 +202,8 @@ export default function MenuPreviewPage() {
     return (
       <div className={styles.centerState}>
         <Loader2 className="animate-spin" size={34} />
-        <strong>Building the customer preview…</strong>
-        <span>Loading your restaurant and customer-visible menu.</span>
+        <strong>{t("preview.loading_title")}</strong>
+        <span>{t("preview.loading_body")}</span>
       </div>
     );
   }
@@ -208,13 +212,17 @@ export default function MenuPreviewPage() {
     return (
       <div className={styles.centerState}>
         <div className={styles.errorIcon}>!</div>
-        <strong>Preview unavailable</strong>
-        <span>{error || "Restaurant information is unavailable."}</span>
+        <strong>{t("preview.error_title")}</strong>
+        <span>
+          {error
+            ? error.text || t(error.key)
+            : t("preview.error_body")}
+        </span>
         <button className="btn-primary" onClick={() => void loadPreview()}>
-          <RefreshCw size={18} /> Try again
+          <RefreshCw size={18} /> {t("error.retry")}
         </button>
         <Link className="btn-outline" href="/menu">
-          Back to menu
+          {t("preview.back_to_menu")}
         </Link>
       </div>
     );
@@ -224,19 +232,20 @@ export default function MenuPreviewPage() {
   const rating = toNumber(restaurant.rating);
   const deliveryTime =
     restaurant.deliveryTimeRange ||
-    `${toNumber(restaurant.deliveryTimeMinMinutes)}–${toNumber(
-      restaurant.deliveryTimeMaxMinutes,
-    )} min`;
+    t("preview.delivery_minutes", {
+      min: toNumber(restaurant.deliveryTimeMinMinutes),
+      max: toNumber(restaurant.deliveryTimeMaxMinutes),
+    });
 
   return (
     <div className={`${styles.page} animate-fade-in`}>
       <header className={styles.pageHeader}>
         <div>
           <Link className={styles.backLink} href="/menu">
-            <ArrowLeft size={17} /> Menu management
+            <ArrowLeft size={17} className="flip-in-rtl" /> {t("preview.back_link")}
           </Link>
-          <h1>Customer Menu Preview</h1>
-          <p>See the menu exactly as a customer can browse it.</p>
+          <h1>{t("preview.title")}</h1>
+          <p>{t("preview.subtitle")}</p>
         </div>
         <button
           className="btn-outline"
@@ -247,7 +256,7 @@ export default function MenuPreviewPage() {
             className={refreshing ? "animate-spin" : undefined}
             size={18}
           />
-          {refreshing ? "Refreshing…" : "Refresh preview"}
+          {refreshing ? t("preview.refreshing") : t("preview.refresh")}
         </button>
       </header>
 
@@ -256,18 +265,15 @@ export default function MenuPreviewPage() {
           <div className={styles.guideIcon}>
             <Eye size={22} />
           </div>
-          <h2>Customer view</h2>
-          <p>
-            This preview is read-only and follows the same visibility rules as
-            the customer app.
-          </p>
+          <h2>{t("preview.guide_title")}</h2>
+          <p>{t("preview.guide_body")}</p>
           <ul>
-            <li>Inactive sections and items are hidden.</li>
-            <li>Unavailable items appear as out of stock.</li>
-            <li>Tap an item to preview its options.</li>
+            <li>{t("preview.guide_point_hidden")}</li>
+            <li>{t("preview.guide_point_stock")}</li>
+            <li>{t("preview.guide_point_tap")}</li>
           </ul>
           <Link className="btn-primary" href="/menu">
-            Edit menu
+            {t("preview.edit_menu")}
           </Link>
         </aside>
 
@@ -280,17 +286,17 @@ export default function MenuPreviewPage() {
           >
             <div className={styles.previewTopBar}>
               <div>
-                <span>Customer Preview</span>
-                <small>Read-only experience</small>
+                <span>{t("preview.chrome_title")}</span>
+                <small>{t("preview.chrome_subtitle")}</small>
               </div>
               <span className={styles.previewBadge}>
-                <Eye size={12} /> Preview
+                <Eye size={12} /> {t("preview.badge")}
               </span>
             </div>
 
             <section className={styles.restaurantHeader}>
               <div
-                aria-label={`${restaurant.name} cover image`}
+                aria-label={t("preview.cover_alt", { name: restaurant.name })}
                 className={styles.cover}
                 role="img"
                 style={
@@ -310,14 +316,14 @@ export default function MenuPreviewPage() {
                       restaurant.isOpen ? styles.isOpen : styles.isClosed
                     }`}
                   >
-                    {restaurant.isOpen ? "Open now" : "Closed"}
+                    {restaurant.isOpen ? t("preview.open_now") : t("preview.closed")}
                   </span>
                 )}
               </div>
 
               <div className={styles.restaurantInfo}>
                 <div
-                  aria-label={`${restaurant.name} logo`}
+                  aria-label={t("preview.logo_alt", { name: restaurant.name })}
                   className={styles.restaurantLogo}
                   role="img"
                   style={
@@ -335,7 +341,11 @@ export default function MenuPreviewPage() {
                   <div className={styles.ratingRow}>
                     <Star size={15} fill="currentColor" />
                     <strong>{rating.toFixed(1)}</strong>
-                    <span>({restaurant.totalRatings ?? 0} ratings)</span>
+                    <span>
+                      {t("preview.ratings_count", {
+                        count: restaurant.totalRatings ?? 0,
+                      })}
+                    </span>
                   </div>
                 )}
                 {restaurant.description && <p>{restaurant.description}</p>}
@@ -344,8 +354,10 @@ export default function MenuPreviewPage() {
                   <span>
                     <Bike size={14} />
                     {deliveryFee === 0
-                      ? "Free delivery"
-                      : `${formatPrice(deliveryFee)} delivery`}
+                      ? t("preview.free_delivery")
+                      : t("preview.delivery_fee", {
+                          amount: formatPrice(deliveryFee),
+                        })}
                   </span>
                   <span>
                     <Clock3 size={14} /> {deliveryTime}
@@ -357,7 +369,7 @@ export default function MenuPreviewPage() {
                   )}
                   {restaurant.website && (
                     <span>
-                      <Globe2 size={14} /> Website
+                      <Globe2 size={14} /> {t("preview.website")}
                     </span>
                   )}
                 </div>
@@ -366,7 +378,7 @@ export default function MenuPreviewPage() {
 
             {sections.length > 0 ? (
               <>
-                <nav aria-label="Menu sections" className={styles.categoryNav}>
+                <nav aria-label={t("preview.sections_nav")} className={styles.categoryNav}>
                   {sections.map((section) => (
                     <button
                       className={
@@ -411,7 +423,7 @@ export default function MenuPreviewPage() {
                                   <strong>{item.name}</strong>
                                   {item.isPopular && (
                                     <span className={styles.popularPill}>
-                                      <Star size={10} fill="currentColor" /> Popular
+                                      <Star size={10} fill="currentColor" /> {t("preview.popular")}
                                     </span>
                                   )}
                                 </span>
@@ -441,16 +453,16 @@ export default function MenuPreviewPage() {
                                 {!item.image && <UtensilsCrossed size={26} />}
                                 {discount !== null && (
                                   <span className={styles.saleBadge}>
-                                    <Tag size={9} /> Sale
+                                    <Tag size={9} /> {t("preview.sale")}
                                   </span>
                                 )}
                                 {item.isAvailable === false ? (
                                   <span className={styles.outOfStock}>
-                                    Out of stock
+                                    {t("preview.out_of_stock")}
                                   </span>
                                 ) : (
                                   <ChevronRight
-                                    className={styles.itemChevron}
+                                    className={`${styles.itemChevron} flip-in-rtl`}
                                     size={17}
                                   />
                                 )}
@@ -466,11 +478,9 @@ export default function MenuPreviewPage() {
             ) : (
               <div className={styles.emptyMenu}>
                 <UtensilsCrossed size={34} />
-                <h3>No customer-visible menu yet</h3>
-                <p>
-                  Add active sections and items to see the customer experience.
-                </p>
-                <Link href="/menu">Go to menu management</Link>
+                <h3>{t("preview.empty_title")}</h3>
+                <p>{t("preview.empty_body")}</p>
+                <Link href="/menu">{t("preview.empty_cta")}</Link>
               </div>
             )}
           </div>
@@ -479,7 +489,7 @@ export default function MenuPreviewPage() {
 
       {selectedItem && (
         <div
-          aria-label="Menu item preview"
+          aria-label={t("preview.item_dialog")}
           aria-modal="true"
           className={styles.modalBackdrop}
           onClick={closeItemDetails}
@@ -488,7 +498,7 @@ export default function MenuPreviewPage() {
           <div className={styles.itemModal} onClick={(event) => event.stopPropagation()}>
             <div className={styles.modalHandle} />
             <button
-              aria-label="Close item preview"
+              aria-label={t("preview.close_item")}
               className={styles.closeButton}
               onClick={closeItemDetails}
               type="button"
@@ -512,7 +522,7 @@ export default function MenuPreviewPage() {
                 <h2>{selectedItem.name}</h2>
                 {selectedItem.isPopular && (
                   <span className={styles.popularPill}>
-                    <Star size={10} fill="currentColor" /> Popular
+                    <Star size={10} fill="currentColor" /> {t("preview.popular")}
                   </span>
                 )}
               </div>
@@ -530,10 +540,10 @@ export default function MenuPreviewPage() {
 
               {loadingOptions ? (
                 <div className={styles.optionsState}>
-                  <Loader2 className="animate-spin" size={24} /> Loading options…
+                  <Loader2 className="animate-spin" size={24} /> {t("preview.loading_options")}
                 </div>
               ) : optionGroups.length === 0 ? (
-                <div className={styles.optionsState}>No add-ons for this item.</div>
+                <div className={styles.optionsState}>{t("preview.no_addons")}</div>
               ) : (
                 <div className={styles.optionGroups}>
                   {optionGroups.map((group) => (
@@ -542,7 +552,9 @@ export default function MenuPreviewPage() {
                         <div>
                           <h3>{group.name}</h3>
                           <span>
-                            {group.type === "radio" ? "Choose 1" : "Multi-select"}
+                            {group.type === "radio"
+                              ? t("preview.choose_one")
+                              : t("preview.multi_select")}
                           </span>
                         </div>
                         <span
@@ -552,7 +564,9 @@ export default function MenuPreviewPage() {
                               : styles.optionalPill
                           }
                         >
-                          {group.isRequired ? "Required" : "Optional"}
+                          {group.isRequired
+                            ? t("options.required")
+                            : t("options.optional")}
                         </span>
                       </div>
                       {[...(group.options ?? [])]
@@ -580,7 +594,7 @@ export default function MenuPreviewPage() {
               )}
 
               <div className={styles.previewNotice}>
-                <Eye size={14} /> Preview mode — no actions available
+                <Eye size={14} /> {t("preview.notice")}
               </div>
             </div>
           </div>

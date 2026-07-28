@@ -1,14 +1,20 @@
 import { apiClient } from "./client";
+import type { SessionTokens } from "./session";
 
 export interface RequestOtpResponse {
   success: boolean;
   message?: string;
 }
 
-export interface VerifyOtpResponse {
-  access_token?: string;
-  refresh_token?: string;
+/**
+ * Both spellings are declared because the API is not consistent about them —
+ * the restaurant routes answer snake_case, others camelCase. Reading only
+ * `access_token` meant a camelCase response signed nobody in and reported
+ * nothing: the screen simply sat there.
+ */
+export interface VerifyOtpResponse extends SessionTokens {
   signup_token?: string;
+  signupToken?: string;
 }
 
 export interface CompleteSignupData {

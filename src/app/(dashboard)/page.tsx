@@ -16,8 +16,18 @@ import {
 } from "lucide-react";
 import { apiClient } from "@/services/api/client";
 import { OrdersService } from "@/services/api/orders";
+import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
+
+const PERIODS: { value: string; labelKey: MessageKey }[] = [
+  { value: "today", labelKey: "dashboard.period.today" },
+  { value: "week", labelKey: "dashboard.period.week" },
+  { value: "month", labelKey: "dashboard.period.month" },
+  { value: "year", labelKey: "dashboard.period.year" },
+  { value: "all", labelKey: "dashboard.period.all" },
+];
 
 export default function DashboardPage() {
+  const { t, locale } = useI18n();
   const [profile, setProfile] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
@@ -25,7 +35,9 @@ export default function DashboardPage() {
   const [period, setPeriod] = useState<string>("month");
   const [statistics, setStatistics] = useState<any>(null);
   const [loadingStats, setLoadingStats] = useState(true);
-  const [errorStats, setErrorStats] = useState<string | null>(null);
+  // A flag rather than a message: the copy is resolved at render time so the
+  // fetch effect never has to depend on `t`, which is a fresh closure each pass.
+  const [statsFailed, setStatsFailed] = useState(false);
   
   // Chart View State (revenue vs orders)
   const [chartView, setChartView] = useState<"revenue" | "orders">("revenue");
@@ -56,13 +68,13 @@ export default function DashboardPage() {
 
     const fetchStats = async () => {
       setLoadingStats(true);
-      setErrorStats(null);
+      setStatsFailed(false);
       try {
         const data = await OrdersService.getStatistics(period);
         setStatistics(data);
       } catch (err) {
         console.error("Failed to fetch dashboard statistics", err);
-        setErrorStats("Failed to load statistics data.");
+        setStatsFailed(true);
       } finally {
         setLoadingStats(false);
       }
@@ -76,13 +88,13 @@ export default function DashboardPage() {
     const code = currencyObj?.code || "USD";
     const symbol = currencyObj?.symbol || "$";
     try {
-      return new Intl.NumberFormat("en-US", {
+      return new Intl.NumberFormat(intlLocale(locale), {
         style: "currency",
         currency: code,
         maximumFractionDigits: 0
       }).format(value);
     } catch (e) {
-      return `${value.toLocaleString()} ${symbol}`;
+      return `${value.toLocaleString(intlLocale(locale))} ${symbol}`;
     }
   };
 
@@ -123,10 +135,10 @@ export default function DashboardPage() {
       >
         <AlertCircle size={64} color="var(--warning)" style={{ marginBottom: "20px" }} />
         <h2 style={{ fontSize: "28px", fontWeight: "700", marginBottom: "12px" }}>
-          Application Under Review
+          {t("dashboard.pending_title")}
         </h2>
         <p style={{ color: "var(--text-secondary)", maxWidth: "450px", fontSize: "16px", lineHeight: "1.6" }}>
-          Your restaurant application is currently being reviewed by our administrative team. We will notify you once it has been approved to begin managing your menu and accepting orders.
+          {t("dashboard.pending_body")}
         </p>
       </div>
     );
@@ -223,10 +235,12 @@ export default function DashboardPage() {
       >
         <div>
           <h1 style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}>
-            Welcome back{profile?.name ? `, ${profile.name}` : ""}!
+            {profile?.name
+              ? t("dashboard.welcome_named", { name: profile.name })
+              : t("dashboard.welcome")}
           </h1>
           <p style={{ color: "var(--text-secondary)" }}>
-            Here is the performance summary of your restaurant.
+            {t("dashboard.subtitle")}
           </p>
         </div>
 
@@ -239,13 +253,13 @@ export default function DashboardPage() {
           border: "1px solid var(--border-color)",
           alignItems: "center"
         }}>
-          {["today", "week", "month", "year", "all"].map((p) => (
+          {PERIODS.map((p) => (
             <button
-              key={p}
-              onClick={() => setPeriod(p)}
-              className={`period-btn ${period === p ? "active" : ""}`}
+              key={p.value}
+              onClick={() => setPeriod(p.value)}
+              className={`period-btn ${period === p.value ? "active" : ""}`}
             >
-              {p}
+              {t(p.labelKey)}
             </button>
           ))}
         </div>
@@ -286,7 +300,7 @@ export default function DashboardPage() {
           </div>
           <div style={{ flex: 1 }}>
             <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              Total Orders
+              {t("dashboard.total_orders")}
             </p>
             {loadingStats ? (
               <div className="skeleton-pulse" style={{ height: "28px", width: "80px", borderRadius: "4px" }} />
@@ -325,7 +339,7 @@ export default function DashboardPage() {
           </div>
           <div style={{ flex: 1 }}>
             <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              Total Revenue
+              {t("dashboard.total_revenue")}
             </p>
             {loadingStats ? (
               <div className="skeleton-pulse" style={{ height: "28px", width: "120px", borderRadius: "4px" }} />
@@ -364,7 +378,7 @@ export default function DashboardPage() {
           </div>
           <div style={{ flex: 1 }}>
             <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              New Customers
+              {t("dashboard.new_customers")}
             </p>
             {loadingStats ? (
               <div className="skeleton-pulse" style={{ height: "28px", width: "60px", borderRadius: "4px" }} />
@@ -403,7 +417,7 @@ export default function DashboardPage() {
           </div>
           <div style={{ flex: 1 }}>
             <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              Rating
+              {t("dashboard.rating")}
             </p>
             {loadingStats ? (
               <div className="skeleton-pulse" style={{ height: "28px", width: "90px", borderRadius: "4px" }} />
@@ -413,7 +427,7 @@ export default function DashboardPage() {
                   {statistics?.avgRating ? statistics.avgRating.toFixed(1) : "0.0"}
                 </h3>
                 <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-                  ({statistics?.totalRatings ?? 0} reviews)
+                  {t("dashboard.reviews_count", { count: statistics?.totalRatings ?? 0 })}
                 </span>
               </div>
             )}
@@ -440,9 +454,9 @@ export default function DashboardPage() {
           gap: "16px"
         }}>
           <div>
-            <h3 style={{ fontSize: "20px", fontWeight: "700", margin: 0 }}>Performance Chart</h3>
+            <h3 style={{ fontSize: "20px", fontWeight: "700", margin: 0 }}>{t("dashboard.chart_title")}</h3>
             <p style={{ color: "var(--text-secondary)", fontSize: "14px", margin: "4px 0 0 0" }}>
-              Weekly trend analysis (last 7 days)
+              {t("dashboard.chart_subtitle")}
             </p>
           </div>
 
@@ -469,7 +483,7 @@ export default function DashboardPage() {
                 transition: "all 0.2s ease"
               }}
             >
-              Revenue
+              {t("dashboard.revenue")}
             </button>
             <button
               onClick={() => { setChartView("orders"); setHoveredPoint(null); }}
@@ -486,7 +500,7 @@ export default function DashboardPage() {
                 transition: "all 0.2s ease"
               }}
             >
-              Orders
+              {t("dashboard.orders")}
             </button>
           </div>
         </div>
@@ -496,15 +510,15 @@ export default function DashboardPage() {
           <div style={{ height: `${height}px`, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <RefreshCw className="animate-spin" size={28} color="var(--accent-primary)" />
           </div>
-        ) : errorStats ? (
+        ) : statsFailed ? (
           <div style={{ height: `${height}px`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px" }}>
             <AlertCircle size={36} color="var(--error)" />
-            <span style={{ color: "var(--text-secondary)" }}>{errorStats}</span>
+            <span style={{ color: "var(--text-secondary)" }}>{t("dashboard.stats_error")}</span>
           </div>
         ) : performanceData.length === 0 ? (
           <div style={{ height: `${height}px`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px" }}>
             <TrendingUp size={36} color="var(--text-muted)" />
-            <span style={{ color: "var(--text-secondary)", fontSize: "14px" }}>No performance records found for this period.</span>
+            <span style={{ color: "var(--text-secondary)", fontSize: "14px" }}>{t("dashboard.no_records")}</span>
           </div>
         ) : (
           <div style={{ position: "relative", width: "100%", overflowX: "auto" }}>
@@ -545,13 +559,13 @@ export default function DashboardPage() {
                 }}>
                   {chartView === "revenue" ? (
                     <>
-                      <span>Revenue:</span>
+                      <span>{t("dashboard.revenue")}:</span>
                       <span>{formatCurrency(points[hoveredPoint].data.revenue, currencyObj)}</span>
                     </>
                   ) : (
                     <>
-                      <span>Orders:</span>
-                      <span>{points[hoveredPoint].data.orders} orders</span>
+                      <span>{t("dashboard.orders")}:</span>
+                      <span>{t("dashboard.orders_value", { count: points[hoveredPoint].data.orders })}</span>
                     </>
                   )}
                 </div>
@@ -695,18 +709,18 @@ export default function DashboardPage() {
       </div>
 
       {/* List Performance Log Detail Table */}
-      {!loadingStats && !errorStats && performanceData.length > 0 && (
+      {!loadingStats && !statsFailed && performanceData.length > 0 && (
         <div className="glass-panel" style={{ padding: "24px", border: "1px solid var(--border-color)" }}>
-          <h3 style={{ fontSize: "18px", fontWeight: "700", marginBottom: "16px" }}>Detailed Daily Breakdown</h3>
+          <h3 style={{ fontSize: "18px", fontWeight: "700", marginBottom: "16px" }}>{t("dashboard.breakdown_title")}</h3>
           <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "14px" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "start", fontSize: "14px" }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>Date</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>Day</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>Orders</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>Revenue</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600", textAlign: "right" }}>Avg. Value</th>
+                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_date")}</th>
+                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_day")}</th>
+                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_orders")}</th>
+                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_revenue")}</th>
+                  <th style={{ padding: "12px 8px", fontWeight: "600", textAlign: "end" }}>{t("dashboard.col_avg")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -726,7 +740,7 @@ export default function DashboardPage() {
                       <td style={{ padding: "14px 8px", color: "var(--success)", fontWeight: "600" }}>
                         {formatCurrency(d.revenue || 0, currencyObj)}
                       </td>
-                      <td style={{ padding: "14px 8px", textAlign: "right", color: "var(--text-secondary)" }}>
+                      <td style={{ padding: "14px 8px", textAlign: "end", color: "var(--text-secondary)" }}>
                         {formatCurrency(avgVal, currencyObj)}
                       </td>
                     </tr>

@@ -16,6 +16,10 @@ import {
   RestaurantSubmission,
   restaurantsService,
 } from "@/services/api/restaurants";
+import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
+
+/** Key + optional server text — the load effect must not close over `t`. */
+type Notice = { key: MessageKey; text?: string } | null;
 
 interface ApplicationForm {
   restaurantName: string;
@@ -31,14 +35,15 @@ const EMPTY_FORM: ApplicationForm = {
 
 export default function ApplicationPage() {
   const router = useRouter();
+  const { t, locale } = useI18n();
   const [submission, setSubmission] = useState<RestaurantSubmission | null>(null);
   const [submissionCount, setSubmissionCount] = useState(0);
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [form, setForm] = useState<ApplicationForm>(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [error, setError] = useState<Notice>(null);
+  const [success, setSuccess] = useState<Notice>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,12 +77,10 @@ export default function ApplicationPage() {
       })
       .catch((loadError: unknown) => {
         if (cancelled) return;
-        setError(
-          getApiErrorMessage(
-            loadError,
-            "We could not load your restaurant application. Please try again.",
-          ),
-        );
+        setError({
+          key: "application.load_failed",
+          text: getApiErrorMessage(loadError, ""),
+        });
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -90,11 +93,11 @@ export default function ApplicationPage() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setError("");
-    setSuccess("");
+    setError(null);
+    setSuccess(null);
 
     if (!form.restaurantName.trim() || !form.currencyId) {
-      setError("Restaurant name and currency are required.");
+      setError({ key: "application.required" });
       return;
     }
 
@@ -107,23 +110,21 @@ export default function ApplicationPage() {
           description: form.description.trim(),
           currencyId: form.currencyId,
         });
-        setSuccess("Your pending application was updated.");
+        setSuccess({ key: "application.updated" });
       } else {
         updatedSubmission = await restaurantsService.submitApplication({
           restaurantName: form.restaurantName.trim(),
           description: form.description.trim() || undefined,
           currencyId: form.currencyId,
         });
-        setSuccess("Your application was submitted for review.");
+        setSuccess({ key: "application.submitted" });
       }
       setSubmission(updatedSubmission);
     } catch (saveError: unknown) {
-      setError(
-        getApiErrorMessage(
-          saveError,
-          "We could not save your application. Please try again.",
-        ),
-      );
+      setError({
+        key: "application.save_failed",
+        text: getApiErrorMessage(saveError, ""),
+      });
     } finally {
       setSaving(false);
     }
@@ -137,6 +138,8 @@ export default function ApplicationPage() {
     );
   }
 
+  const errorText = error ? error.text || t(error.key) : "";
+  const successText = success ? success.text || t(success.key) : "";
   const isPending = submission?.status === "pending";
   const isRejected = submission?.status === "rejected";
   const isCancelled = submission?.status === "cancelled";
@@ -182,21 +185,21 @@ export default function ApplicationPage() {
                 textTransform: "uppercase",
               }}
             >
-              Restaurant application
+              {t("application.eyebrow")}
             </p>
             <h1 style={{ margin: "0 0 10px", fontSize: "28px" }}>
               {isPending
-                ? "Your application is under review"
+                ? t("application.title_pending")
                 : isRejected
-                  ? "Your application needs changes"
+                  ? t("application.title_rejected")
                   : isCancelled
-                    ? "Your application was cancelled"
-                    : "Apply to join Nowlny"}
+                    ? t("application.title_cancelled")
+                    : t("application.title_new")}
             </h1>
             <p style={{ margin: 0, color: "var(--text-secondary)", lineHeight: 1.6 }}>
               {isPending
-                ? "You can update these details while the application is pending. Restaurant tools will unlock after approval."
-                : "Review your restaurant details below and submit a new application when you are ready."}
+                ? t("application.body_pending")
+                : t("application.body_other")}
             </p>
           </div>
         </div>
@@ -213,18 +216,18 @@ export default function ApplicationPage() {
               border: "1px solid rgba(239, 68, 68, 0.2)",
             }}
           >
-            <strong>Review note:</strong> {submission.rejectionReason}
+            <strong>{t("application.review_note")}</strong> {submission.rejectionReason}
           </div>
         )}
       </section>
 
       <section className="glass-panel" style={{ padding: "28px" }}>
-        {error && (
+        {errorText && (
           <div role="alert" style={{ marginBottom: "20px", color: "var(--error)" }}>
-            {error}
+            {errorText}
           </div>
         )}
-        {success && (
+        {successText && (
           <div
             role="status"
             style={{
@@ -235,14 +238,14 @@ export default function ApplicationPage() {
               color: "var(--success)",
             }}
           >
-            <CheckCircle2 size={18} /> {success}
+            <CheckCircle2 size={18} /> {successText}
           </div>
         )}
 
         <form onSubmit={handleSubmit} style={{ display: "grid", gap: "20px" }}>
           <div style={{ display: "grid", gap: "8px" }}>
             <label htmlFor="application-name" style={{ fontWeight: 600 }}>
-              Restaurant name
+              {t("application.name")}
             </label>
             <input
               id="application-name"
@@ -257,7 +260,7 @@ export default function ApplicationPage() {
 
           <div style={{ display: "grid", gap: "8px" }}>
             <label htmlFor="application-description" style={{ fontWeight: 600 }}>
-              Description
+              {t("application.description")}
             </label>
             <textarea
               id="application-description"
@@ -267,13 +270,13 @@ export default function ApplicationPage() {
               onChange={(event) =>
                 setForm((current) => ({ ...current, description: event.target.value }))
               }
-              placeholder="Tell customers what makes your restaurant special."
+              placeholder={t("application.description_placeholder")}
             />
           </div>
 
           <div style={{ display: "grid", gap: "8px" }}>
             <label htmlFor="application-currency" style={{ fontWeight: 600 }}>
-              Menu currency
+              {t("application.currency")}
             </label>
             <select
               id="application-currency"
@@ -285,7 +288,7 @@ export default function ApplicationPage() {
               required
             >
               <option value="" disabled>
-                Select a currency
+                {t("application.currency_placeholder")}
               </option>
               {currencies.map((currency) => (
                 <option key={currency.code} value={currency.code}>
@@ -307,14 +310,18 @@ export default function ApplicationPage() {
           >
             <span style={{ color: "var(--text-muted)", fontSize: "13px" }}>
               {submissionCount > 1
-                ? `${submissionCount} applications in your history`
+                ? t("application.history_count", { count: submissionCount })
                 : submission?.updatedAt
-                  ? `Last updated ${new Date(submission.updatedAt).toLocaleDateString()}`
-                  : "Your application will be reviewed by the Nowlny team."}
+                  ? t("application.last_updated", {
+                      date: new Date(submission.updatedAt).toLocaleDateString(
+                        intlLocale(locale),
+                      ),
+                    })
+                  : t("application.will_be_reviewed")}
             </span>
             <button className="btn-primary" type="submit" disabled={saving || currencies.length === 0}>
               {saving ? <Loader2 className="animate-spin" size={18} /> : isPending ? <RefreshCw size={18} /> : <Store size={18} />}
-              {isPending ? "Save changes" : "Submit for review"}
+              {isPending ? t("application.save_changes") : t("application.submit")}
             </button>
           </div>
         </form>

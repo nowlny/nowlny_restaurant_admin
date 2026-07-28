@@ -1,39 +1,34 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, Loader2, LogOut, Store, Video } from 'lucide-react';
-import Cookies from 'js-cookie';
-import { SettingsService } from '@/services/api/settings';
 import { authService } from '@/services/api/auth';
+import { clearSession } from '@/services/api/session';
+import { useI18n, type MessageKey } from '@/lib/i18n';
+import ChromeControls from '@/components/ChromeControls';
 
-interface SidebarProfile {
+export interface SidebarProfile {
   name?: string;
   logo?: string | null;
   backgroundImageUrl?: string | null;
 }
 
-export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose?: () => void }) {
+export default function Sidebar({
+  profile,
+  isOpen,
+  onClose,
+}: {
+  /** Supplied by the dashboard shell, which has already fetched it. */
+  profile?: SidebarProfile | null;
+  isOpen?: boolean;
+  onClose?: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
-  const [profile, setProfile] = useState<SidebarProfile | null>(null);
+  const { t } = useI18n();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
-
-  useEffect(() => {
-    if (pathname === '/application') return;
-    let cancelled = false;
-    SettingsService.getOwnRestaurant()
-      .then((data: SidebarProfile) => {
-        if (!cancelled) setProfile(data);
-      })
-      .catch(() => {
-        // The dashboard access gate owns profile-fetch errors.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [pathname]);
 
   const handleLogout = async () => {
     setIsLoggingOut(true);
@@ -42,19 +37,18 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
     } catch {
       // Clear the local session even if the token already expired.
     } finally {
-      Cookies.remove('access_token');
-      Cookies.remove('refresh_token');
+      clearSession();
       router.replace('/auth/login');
     }
   };
 
-  const navItems = [
-    { label: 'Dashboard', icon: LayoutDashboard, href: '/' },
-    { label: 'Orders', icon: ShoppingBag, href: '/orders' },
-    { label: 'Menu', icon: Utensils, href: '/menu' },
-    { label: 'Stories', icon: ImageIcon, href: '/stories' },
-    { label: 'Reels', icon: Video, href: '/reels' },
-    { label: 'Settings', icon: Settings, href: '/settings' },
+  const navItems: { labelKey: MessageKey; icon: typeof LayoutDashboard; href: string }[] = [
+    { labelKey: 'nav.dashboard', icon: LayoutDashboard, href: '/' },
+    { labelKey: 'nav.orders', icon: ShoppingBag, href: '/orders' },
+    { labelKey: 'nav.menu', icon: Utensils, href: '/menu' },
+    { labelKey: 'nav.stories', icon: ImageIcon, href: '/stories' },
+    { labelKey: 'nav.reels', icon: Video, href: '/reels' },
+    { labelKey: 'nav.settings', icon: Settings, href: '/settings' },
   ];
 
   return (
@@ -71,7 +65,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
       <aside className={`mobile-sidebar ${isOpen ? 'open' : ''}`} style={{
         width: '260px',
         backgroundColor: 'var(--bg-surface)',
-        borderRight: '1px solid var(--border-color)',
+        borderInlineEnd: '1px solid var(--border-color)',
         display: 'flex',
         flexDirection: 'column',
         height: '100vh',
@@ -112,8 +106,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
         <div style={{
           position: 'absolute',
           bottom: '16px',
-          left: '16px',
-          right: '16px',
+          insetInline: '16px',
           display: 'flex',
           alignItems: 'center',
           gap: '12px'
@@ -132,10 +125,10 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
           
           <div style={{ minWidth: 0 }}>
             <h2 style={{ fontSize: '16px', fontWeight: '700', color: 'white', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {profile?.name || 'Nowlny Partner'}
+              {profile?.name || t('nav.default_partner')}
             </h2>
             <p style={{ fontSize: '11px', color: 'rgba(255,255,255,0.7)', margin: 0 }}>
-              Partner Dashboard
+              {t('nav.partner_dashboard')}
             </p>
           </div>
         </div>
@@ -171,14 +164,18 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
               }
             }}>
               <item.icon size={20} />
-              {item.label}
+              {t(item.labelKey)}
             </Link>
           );
         })}
       </nav>
 
-      <div style={{ padding: '24px 16px', borderTop: '1px solid var(--border-color)' }}>
-        <button 
+      <div style={{ padding: '16px', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        {/* Appearance and language sit above sign-out: they are shell-wide
+            switches, and the sidebar footer is the only chrome every signed-in
+            screen shares. */}
+        <ChromeControls style={{ justifyContent: 'space-between' }} />
+        <button
           onClick={() => void handleLogout()}
           disabled={isLoggingOut}
           style={{
@@ -196,7 +193,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
             fontFamily: 'inherit',
             fontSize: '1rem',
             transition: 'all 0.2s ease',
-            textAlign: 'left'
+            textAlign: 'start'
           }}
           onMouseEnter={(e) => {
             e.currentTarget.style.backgroundColor = 'rgba(239, 68, 68, 0.1)';
@@ -207,8 +204,8 @@ export default function Sidebar({ isOpen, onClose }: { isOpen?: boolean; onClose
             e.currentTarget.style.color = 'var(--text-secondary)';
           }}
         >
-          {isLoggingOut ? <Loader2 className="animate-spin" size={20} /> : <LogOut size={20} />}
-          {isLoggingOut ? 'Logging out…' : 'Log Out'}
+          {isLoggingOut ? <Loader2 className="animate-spin" size={20} /> : <LogOut size={20} className="flip-in-rtl" />}
+          {isLoggingOut ? t('auth.logging_out') : t('auth.log_out')}
         </button>
       </div>
     </aside>

@@ -1,30 +1,40 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import Cookies from 'js-cookie';
+import { clearSession, saveSession } from '@/services/api/session';
+import { useSessionStatus } from '@/lib/useSession';
 import { authService } from '@/services/api/auth';
 import { Trash2, ArrowRight, Loader2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { useI18n, type MessageKey } from '@/lib/i18n';
+import ChromeControls from '@/components/ChromeControls';
 import '@/app/globals.css';
+
+/** Key + optional server text, so a language switch retranslates the error. */
+type DeleteError = { key: MessageKey; text?: string } | null;
 
 export default function DeleteAccountPage() {
   const router = useRouter();
+  const { t } = useI18n();
   
-  const [step, setStep] = useState<'PHONE' | 'OTP' | 'CONFIRM' | 'SUCCESS'>('PHONE');
+  const sessionStatus = useSessionStatus();
+  const [ownStep, setStep] = useState<'PHONE' | 'OTP' | 'CONFIRM' | 'SUCCESS'>('PHONE');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [code, setCode] = useState(['', '', '', '']);
   const codeInputs = useRef<(HTMLInputElement | null)[]>([]);
   
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<DeleteError>(null);
+  const errorText = error ? error.text || t(error.key) : '';
 
-  useEffect(() => {
-    // Check if already logged in
-    const token = Cookies.get('access_token');
-    if (token) {
-      setStep('CONFIRM');
-    }
-  }, []);
+  /**
+   * Someone already signed in skips straight to the confirmation. Derived
+   * rather than pushed into state from an effect: the cookies are unreadable
+   * during the server render, so an effect would have to correct itself on the
+   * client and briefly ask a signed-in operator for their phone number.
+   */
+  const step =
+    ownStep === 'PHONE' && sessionStatus === 'authenticated' ? 'CONFIRM' : ownStep;
 
   const getFullPhoneNumber = () => {
     let formatted = phoneNumber.replace(/[^0-9]/g, '');
@@ -36,8 +46,8 @@ export default function DeleteAccountPage() {
 
   const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    if (!phoneNumber) return setError('Please enter a phone number');
+    setError(null);
+    if (!phoneNumber) return setError({ key: 'login.error_no_phone' });
 
     setIsLoading(true);
     try {
@@ -47,7 +57,10 @@ export default function DeleteAccountPage() {
         if (codeInputs.current[0]) codeInputs.current[0].focus();
       }, 100);
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to send OTP');
+      setError({
+        key: 'login.error_send_failed',
+        text: err.response?.data?.message,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -55,26 +68,25 @@ export default function DeleteAccountPage() {
 
   const handleVerifyOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    
+    setError(null);
+
     const fullCode = code.join('');
-    if (fullCode.length !== 4) return setError('Please enter the 4-digit code');
+    if (fullCode.length !== 4) return setError({ key: 'login.error_no_code' });
 
     setIsLoading(true);
     try {
       const res = await authService.verifyOtp(getFullPhoneNumber(), fullCode);
       
-      if (res.access_token) {
-        Cookies.set('access_token', res.access_token);
-        if (res.refresh_token) {
-          Cookies.set('refresh_token', res.refresh_token);
-        }
+      if (saveSession(res)) {
         setStep('CONFIRM');
       } else {
-        setError('Failed to authenticate');
+        setError({ key: 'delete.auth_failed' });
       }
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Invalid code');
+      setError({
+        key: 'login.error_invalid_code',
+        text: err.response?.data?.message,
+      });
     } finally {
       setIsLoading(false);
     }
@@ -82,19 +94,17 @@ export default function DeleteAccountPage() {
 
   const handleDeleteAccount = async () => {
     setIsLoading(true);
-    setError('');
+    setError(null);
     try {
       await authService.deleteAccount();
-      Cookies.remove('access_token');
-      Cookies.remove('refresh_token');
+      clearSession();
       setStep('SUCCESS');
     } catch (err: any) {
       if (err.response?.status === 409) {
-        Cookies.remove('access_token');
-        Cookies.remove('refresh_token');
+        clearSession();
         setStep('SUCCESS');
       } else {
-        setError('Failed to delete account. Please try again.');
+        setError({ key: 'delete.failed' });
       }
     } finally {
       setIsLoading(false);
@@ -183,30 +193,32 @@ export default function DeleteAccountPage() {
           )}
           
           <h1 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px' }}>
-            {step === 'SUCCESS' ? 'Account Deleted' : 'Delete Account'}
+            {step === 'SUCCESS' ? t('delete.title_done') : t('delete.title')}
           </h1>
           <p style={{ color: 'var(--text-secondary)' }}>
-            {step === 'PHONE' && 'Login to authorize account deletion.'}
-            {step === 'OTP' && `Enter the 4-digit code sent to ${getFullPhoneNumber()}`}
-            {step === 'CONFIRM' && 'Are you absolutely sure you want to delete your account? This action cannot be undone.'}
-            {step === 'SUCCESS' && 'Your account and personal data have been completely deleted.'}
+            {step === 'PHONE' && t('delete.step_phone')}
+            {step === 'OTP' && t('delete.step_otp', { phone: getFullPhoneNumber() })}
+            {step === 'CONFIRM' && t('delete.step_confirm')}
+            {step === 'SUCCESS' && t('delete.step_done')}
           </p>
         </div>
 
-        {error && (
+        <ChromeControls style={{ justifyContent: 'center' }} />
+
+        {errorText && (
           <div style={{ 
             padding: '12px', background: 'rgba(239, 68, 68, 0.1)', 
             color: 'var(--error)', borderRadius: '8px', fontSize: '14px',
             border: '1px solid rgba(239, 68, 68, 0.2)'
           }}>
-            {error}
+            {errorText}
           </div>
         )}
 
         {step === 'PHONE' && (
           <form onSubmit={handleRequestOtp} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Phone Number</label>
+              <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>{t('login.phone_label')}</label>
               
               <div style={{
                 display: 'flex',
@@ -237,7 +249,7 @@ export default function DeleteAccountPage() {
                 </div>
                 <input 
                   type="tel"
-                  placeholder="71 234 567"
+                  placeholder={t('login.phone_placeholder')}
                   value={phoneNumber}
                   onChange={(e) => setPhoneNumber(e.target.value)}
                   autoFocus
@@ -256,8 +268,8 @@ export default function DeleteAccountPage() {
             </div>
             
             <button type="submit" className="btn-primary" disabled={isLoading} style={{ width: '100%', marginTop: '8px' }}>
-              {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Send OTP'}
-              {!isLoading && <ArrowRight size={20} />}
+              {isLoading ? <Loader2 className="animate-spin" size={20} /> : t('delete.send_otp')}
+              {!isLoading && <ArrowRight size={20} className="flip-in-rtl" />}
             </button>
           </form>
         )}
@@ -265,7 +277,7 @@ export default function DeleteAccountPage() {
         {step === 'OTP' && (
           <form onSubmit={handleVerifyOtp} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
-              <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>Verification Code</label>
+              <label style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>{t('login.code_label')}</label>
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
                 {code.map((digit, idx) => (
                   <input
@@ -307,7 +319,7 @@ export default function DeleteAccountPage() {
             </div>
 
             <button type="submit" className="btn-primary" disabled={isLoading || code.join('').length !== 4} style={{ width: '100%', marginTop: '16px' }}>
-              {isLoading ? <Loader2 className="animate-spin" size={20} /> : 'Verify'}
+              {isLoading ? <Loader2 className="animate-spin" size={20} /> : t('delete.verify')}
             </button>
             <button 
               type="button" 
@@ -317,7 +329,7 @@ export default function DeleteAccountPage() {
               }}
               style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '14px', marginTop: '8px' }}
             >
-              Change Phone Number
+              {t('login.change_phone')}
             </button>
           </form>
         )}
@@ -344,7 +356,7 @@ export default function DeleteAccountPage() {
               }}
             >
               {isLoading ? <Loader2 className="animate-spin" size={20} /> : <Trash2 size={20} />}
-              Yes, Delete My Account
+              {t('delete.confirm_cta')}
             </button>
             <button 
               onClick={() => router.push('/')}
@@ -361,7 +373,7 @@ export default function DeleteAccountPage() {
                 transition: 'all 0.2s ease'
               }}
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         )}
@@ -372,7 +384,7 @@ export default function DeleteAccountPage() {
             className="btn-primary"
             style={{ width: '100%' }}
           >
-            Back to Login
+            {t('delete.back_to_login')}
           </button>
         )}
       </div>

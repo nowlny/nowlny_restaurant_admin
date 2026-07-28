@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Loader2, Upload } from 'lucide-react';
 import { StoriesService } from '@/services/api/stories';
+import { useI18n } from '@/lib/i18n';
 
 interface StoryModalProps {
   isOpen: boolean;
@@ -10,6 +11,7 @@ interface StoryModalProps {
 }
 
 export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModalProps) {
+  const { t } = useI18n();
   const [loading, setLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [formData, setFormData] = useState({ imageUrl: '', caption: '' });
@@ -66,7 +68,7 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
         setFormData(prev => ({ ...prev, imageUrl: uploadedUrl }));
       } catch (err) {
         console.error('Failed to upload file', err);
-        alert('Failed to upload media. Please try again.');
+        alert(t('stories.upload_failed'));
       }
     }
   };
@@ -84,7 +86,7 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
       onClose();
     } catch (err) {
       console.error('Failed to save story', err);
-      alert('Failed to save story');
+      alert(t('stories.save_failed'));
     } finally {
       setLoading(false);
     }
@@ -97,11 +99,11 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
   };
 
   return (
-    <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div className="glass-panel" style={{ width: '100%', maxWidth: '400px', padding: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{story ? 'Edit Story' : 'New Story'}</h2>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{story ? t('stories.edit_title') : t('stories.new_title')}</h2>
+          <button onClick={onClose} aria-label={t('common.close')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
             <X size={24} />
           </button>
         </div>
@@ -109,24 +111,24 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Media (Image or Video) *</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('stories.media_label')} *</label>
             
             {formData.imageUrl ? (
               <div style={{ width: '100%', height: '200px', borderRadius: '8px', overflow: 'hidden', backgroundColor: 'var(--bg-surface)', position: 'relative' }}>
                 {isVideoUrl(formData.imageUrl) ? (
                   <video src={formData.imageUrl} controls style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 ) : (
-                  <img src={formData.imageUrl} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <img src={formData.imageUrl} alt={t('stories.preview_alt')} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 )}
                 
                 <button 
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="btn-outline"
-                  style={{ position: 'absolute', bottom: '8px', right: '8px', padding: '6px 12px', fontSize: '12px', backgroundColor: 'var(--bg-surface)' }}
+                  style={{ position: 'absolute', bottom: '8px', insetInlineEnd: '8px', padding: '6px 12px', fontSize: '12px', backgroundColor: 'var(--bg-surface)' }}
                   disabled={isUploading}
                 >
-                  Change Media
+                  {t('stories.change_media')}
                 </button>
               </div>
             ) : (
@@ -141,12 +143,12 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
                 {isUploading ? (
                   <>
                     <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" style={{ marginBottom: '8px' }} />
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>Uploading...</span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{t('stories.uploading')}</span>
                   </>
                 ) : (
                   <>
                     <Upload size={32} color="var(--text-muted)" style={{ marginBottom: '8px' }} />
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>Click to upload Image or Video</span>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{t('stories.upload_prompt')}</span>
                   </>
                 )}
               </div>
@@ -165,7 +167,7 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
               <input 
                 type="url" 
                 className="form-input" 
-                placeholder="Or paste media URL here..."
+                placeholder={t('stories.url_placeholder')}
                 value={formData.imageUrl}
                 onChange={e => setFormData({ ...formData, imageUrl: e.target.value })}
                 disabled={isUploading}
@@ -174,18 +176,18 @@ export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModa
           </div>
 
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>Caption</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('stories.caption')}</label>
             <textarea 
               className="form-input" 
               rows={3}
-              placeholder="Write something..."
+              placeholder={t('stories.caption_placeholder')}
               value={formData.caption}
               onChange={e => setFormData({ ...formData, caption: e.target.value })}
             />
           </div>
 
           <button type="submit" disabled={loading || isUploading || !formData.imageUrl} className="btn-primary" style={{ marginTop: '16px', justifyContent: 'center' }}>
-            {loading ? <Loader2 className="animate-spin" size={20} /> : 'Save Story'}
+            {loading ? <Loader2 className="animate-spin" size={20} /> : t('stories.save')}
           </button>
         </form>
       </div>

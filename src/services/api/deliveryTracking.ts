@@ -1,4 +1,4 @@
-import Cookies from 'js-cookie';
+import { getAccessToken } from './session';
 import { io, Socket } from 'socket.io-client';
 import { OrderStatus } from './orders';
 
@@ -52,7 +52,7 @@ function getDeliverySocketUrl() {
 }
 
 export function createDeliveryTrackingSocket(): DeliveryTrackingSocket {
-  const rawToken = Cookies.get('access_token');
+  const rawToken = getAccessToken();
   const token = rawToken?.replace(/^Bearer\s+/i, '');
   if (!token) {
     throw new Error('Your session is missing. Sign in again to track the driver.');
