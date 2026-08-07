@@ -420,3 +420,39 @@ a {
   background: var(--accent-primary);
   color: #fff;
 }
+
+/* Print — used by the QR dine-in menu page. Hide the whole app and let only
+   the QR block through, centered on the sheet. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .qr-print-area,
+  .qr-print-area * {
+    visibility: visible;
+  }
+
+  .qr-print-area {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+  }
+
+  .qr-print-area * {
+    break-inside: avoid;
+  }
+
+  /* Paper is white whatever the app theme, so force legible ink. */
+  .qr-print-area h2 {
+    color: #000;
+  }
+
+  .qr-print-area p {
+    color: #333;
+  }
+}

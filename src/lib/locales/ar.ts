@@ -14,6 +14,7 @@ export const ar: Record<MessageKey, string> = {
   "nav.dashboard": "الرئيسية",
   "nav.orders": "الطلبات",
   "nav.menu": "قائمة الطعام",
+  "nav.qr": "قائمة QR",
   "nav.stories": "القصص",
   "nav.reels": "الريلز",
   "nav.settings": "الإعدادات",
@@ -488,6 +489,16 @@ export const ar: Record<MessageKey, string> = {
   "reel.save_failed": "تعذّر حفظ الريل",
   "reel.video_upload_failed": "تعذّر رفع الفيديو. يرجى المحاولة مرة أخرى.",
   "reel.thumbnail_upload_failed": "تعذّر رفع الصورة المصغّرة. يرجى المحاولة مرة أخرى.",
+
+  // ── QR dine-in menu ──
+  "qr.title": "قائمة الطعام برمز QR",
+  "qr.subtitle": "اطبع رمز QR يفتح قائمتك عندما يمسحه الزبائن على الطاولة.",
+  "qr.link_label": "رابط القائمة",
+  "qr.copy_link": "نسخ الرابط",
+  "qr.copied": "تم النسخ!",
+  "qr.download_png": "تنزيل PNG",
+  "qr.print": "طباعة",
+  "qr.scan_hint": "امسح الرمز لعرض القائمة",
 
   // ── Restaurant application ──
   "application.eyebrow": "طلب انضمام المطعم",

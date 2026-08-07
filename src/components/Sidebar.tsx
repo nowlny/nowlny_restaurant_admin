@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, Loader2, LogOut, Store, Video } from 'lucide-react';
+import { LayoutDashboard, ShoppingBag, Utensils, Settings, Image as ImageIcon, Loader2, LogOut, QrCode, Store, Video } from 'lucide-react';
 import { authService } from '@/services/api/auth';
 import { clearSession } from '@/services/api/session';
 import { useI18n, type MessageKey } from '@/lib/i18n';
@@ -46,6 +46,7 @@ export default function Sidebar({
     { labelKey: 'nav.dashboard', icon: LayoutDashboard, href: '/' },
     { labelKey: 'nav.orders', icon: ShoppingBag, href: '/orders' },
     { labelKey: 'nav.menu', icon: Utensils, href: '/menu' },
+    { labelKey: 'nav.qr', icon: QrCode, href: '/qr' },
     { labelKey: 'nav.stories', icon: ImageIcon, href: '/stories' },
     { labelKey: 'nav.reels', icon: Video, href: '/reels' },
     { labelKey: 'nav.settings', icon: Settings, href: '/settings' },

@@ -16,6 +16,7 @@ export const en = {
   "nav.dashboard": "Dashboard",
   "nav.orders": "Orders",
   "nav.menu": "Menu",
+  "nav.qr": "QR Menu",
   "nav.stories": "Stories",
   "nav.reels": "Reels",
   "nav.settings": "Settings",
@@ -507,6 +508,17 @@ export const en = {
   "reel.save_failed": "Failed to save reel",
   "reel.video_upload_failed": "Failed to upload video. Please try again.",
   "reel.thumbnail_upload_failed": "Failed to upload thumbnail. Please try again.",
+
+  // ── QR dine-in menu ──
+  "qr.title": "QR Dine-In Menu",
+  "qr.subtitle":
+    "Print a QR code that opens your menu when guests scan it at the table.",
+  "qr.link_label": "Menu link",
+  "qr.copy_link": "Copy link",
+  "qr.copied": "Copied!",
+  "qr.download_png": "Download PNG",
+  "qr.print": "Print",
+  "qr.scan_hint": "Scan to view our menu",
 
   // ── Restaurant application ──
   "application.eyebrow": "Restaurant application",
