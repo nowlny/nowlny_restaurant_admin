@@ -8,7 +8,9 @@ import { getApiErrorMessage } from "@/services/api/errors";
 import { useI18n } from "@/lib/i18n";
 
 /** Public dine-in web menu; the QR code simply deep-links to it. */
-const MENU_BASE_URL = "https://nowlny.com/menu";
+// www on purpose: it serves the app-link verification files directly; the
+// apex host is a hosting-level redirect, which the OS verifiers refuse.
+const MENU_BASE_URL = "https://www.nowlny.com/menu";
 
 /** High-resolution size for the hidden canvas the PNG download is cut from. */
 const DOWNLOAD_SIZE = 1024;
