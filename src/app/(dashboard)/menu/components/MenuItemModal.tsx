@@ -1,172 +1,405 @@
-import React, { useState, useEffect } from 'react';
-import { X, Loader2 } from 'lucide-react';
-import { MenuService } from '@/services/api/menu';
-import { useI18n } from '@/lib/i18n';
+"use client";
+
+import React, { useId, useState } from "react";
+import Modal from "@/components/ui/Modal";
+import { Busy, useFeedback } from "@/components/ui/Feedback";
+import ImagePicker from "@/components/menu/ImagePicker";
+import StockScheduleSelect from "@/components/menu/StockScheduleSelect";
+import {
+  MENU_IMAGE_ACCEPT,
+  MENU_IMAGE_MAX_BYTES,
+  MenuService,
+  checkMenuImage,
+  type MenuItem,
+  type MenuItemPayload,
+  type StockSchedule,
+} from "@/services/api/menu";
+import { getApiErrorMessage, isApiStatus } from "@/services/api/errors";
+import { useI18n } from "@/lib/i18n";
+import { useMenuMoney } from "@/lib/menuMoney";
 
 interface MenuItemModalProps {
   isOpen: boolean;
   onClose: () => void;
   sectionId: string;
-  item?: any; // If editing
-  onSave: () => void;
+  /** Set when editing; null for a new dish. */
+  item: MenuItem | null;
+  /** A new dish goes after the section's last one, matching where the list shows it. */
+  nextSortOrder: number;
+  schedules: StockSchedule[];
+  /** The section's schedule, which "none" falls back to. */
+  sectionSchedule?: StockSchedule;
+  /**
+   * The saved dish, so the page can patch its list in place. `null` when the
+   * API's answer couldn't be read and the section should be refetched instead.
+   */
+  onSaved: (item: MenuItem | null, sectionId: string) => void;
 }
 
-export default function MenuItemModal({ isOpen, onClose, sectionId, item, onSave }: MenuItemModalProps) {
+/** Inputs hold strings: a number state turned a cleared box into NaN. */
+interface FormState {
+  name: string;
+  description: string;
+  price: string;
+  discountedPrice: string;
+  image: string;
+  isActive: boolean;
+  isAvailable: boolean;
+  isPopular: boolean;
+}
+
+type FieldErrors = Partial<Record<"name" | "price" | "discountedPrice", string>>;
+
+const emptyForm: FormState = {
+  name: "",
+  description: "",
+  price: "",
+  discountedPrice: "",
+  image: "",
+  isActive: true,
+  isAvailable: true,
+  isPopular: false,
+};
+
+const toFormValue = (value: number | string | null | undefined) =>
+  value === null || value === undefined || value === "" ? "" : String(value);
+
+/** Blank is `null`; anything unreadable is `NaN` so validation can catch it. */
+const toNumberOrNull = (value: string): number | null => {
+  const trimmed = value.trim().replace(",", ".");
+  return trimmed === "" ? null : Number(trimmed);
+};
+
+export default function MenuItemModal({
+  isOpen,
+  onClose,
+  sectionId,
+  item,
+  nextSortOrder,
+  onSaved,
+  schedules,
+  sectionSchedule,
+}: MenuItemModalProps) {
   const { t } = useI18n();
-  const [loading, setLoading] = useState(false);
-  const [formData, setFormData] = useState({
-    name: '',
-    description: '',
-    price: 0,
-    discountedPrice: 0,
-    image: '',
-    isActive: true,
-    isAvailable: true,
-    isPopular: false
-  });
+  const { toast } = useFeedback();
+  const money = useMenuMoney();
+  const formId = useId();
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  // Seeded once: the page mounts this fresh for every dish it opens, which is
+  // what keeps a previous dish's edits from leaking into the next one.
+  const [form, setForm] = useState<FormState>(() =>
+    item
+      ? {
+          name: item.name || "",
+          description: item.description || "",
+          price: toFormValue(item.price),
+          // A stored 0 means "no sale" — showing it invites saving it back.
+          discountedPrice: Number(item.discountedPrice) > 0 ? toFormValue(item.discountedPrice) : "",
+          image: item.image || "",
+          isActive: item.isActive !== false,
+          isAvailable: item.isAvailable !== false,
+          isPopular: item.isPopular === true,
+        }
+      : emptyForm,
+  );
+  const [errors, setErrors] = useState<FieldErrors>({});
+  const [scheduleId, setScheduleId] = useState<string | null>(item?.stockScheduleId ?? null);
 
-  useEffect(() => {
-    if (item) {
-      setFormData({
-        name: item.name || '',
-        description: item.description || '',
-        price: item.price || 0,
-        discountedPrice: item.discountedPrice || 0,
-        image: item.image || '',
-        isActive: item.isActive !== false,
-        isAvailable: item.isAvailable !== false,
-        isPopular: item.isPopular === true
-      });
-    } else {
-      setFormData({
-        name: '',
-        description: '',
-        price: 0,
-        discountedPrice: 0,
-        image: '',
-        isActive: true,
-        isAvailable: true,
-        isPopular: false
-      });
-    }
-  }, [item, isOpen]);
-
-  if (!isOpen) return null;
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
+  /**
+   * Attach / detach the dish's own schedule after it is saved. Answers with
+   * the dish as the API now resolves it (its stock may have flipped). A
+   * refusal (409: the dish runs a one-off) is shown in the API's words.
+   */
+  const applySchedule = async (itemId: string): Promise<MenuItem | null> => {
+    if (scheduleId === (item?.stockScheduleId ?? null)) return null;
     try {
-      const payload = { ...formData, sectionId };
-      if (item) {
-        await MenuService.updateItem(item.id, payload);
-      } else {
-        await MenuService.createItem(payload);
-      }
-      onSave();
-      onClose();
-    } catch (error) {
-      console.error('Failed to save menu item', error);
-      alert(t('item.save_failed'));
-    } finally {
-      setLoading(false);
+      return await MenuService.setItemStockSchedule(itemId, scheduleId);
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, t("stock.attach_failed")));
+      return null;
     }
   };
 
+  const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+
+  const validate = (): { price: number; discountedPrice: number | null } | null => {
+    const next: FieldErrors = {};
+    const price = toNumberOrNull(form.price);
+    const discountedPrice = toNumberOrNull(form.discountedPrice);
+
+    if (!form.name.trim()) next.name = t("menu.error_name_required");
+    if (price === null || !Number.isFinite(price) || price < 0) {
+      next.price = t("menu.error_price_invalid");
+    }
+    if (discountedPrice !== null) {
+      if (!Number.isFinite(discountedPrice) || discountedPrice < 0) {
+        next.discountedPrice = t("menu.error_price_invalid");
+      } else if (price !== null && Number.isFinite(price) && discountedPrice >= price) {
+        next.discountedPrice = t("menu.error_discount_not_lower");
+      }
+    }
+
+    setErrors(next);
+    if (Object.keys(next).length > 0) return null;
+    return { price: price as number, discountedPrice };
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (saving || uploading) return;
+    const numbers = validate();
+    if (!numbers) return;
+
+    const payload: MenuItemPayload = {
+      sectionId,
+      name: form.name.trim(),
+      description: form.description.trim(),
+      price: numbers.price,
+      discountedPrice: numbers.discountedPrice,
+      isActive: form.isActive,
+      isPopular: form.isPopular,
+    };
+    // `image: ""` fails the API's URL check, so a blank photo is left out.
+    // Removing an existing one is the one case that has to say so: `null`.
+    const image = form.image.trim();
+    if (image) payload.image = image;
+    else if (item?.image) payload.image = null;
+
+    setSaving(true);
+    try {
+      if (item) {
+        let saved = await MenuService.updateItem(item.id, payload);
+        // Stock goes through its own endpoint, which knows about schedules.
+        const wasAvailable = item.isAvailable !== false;
+        if (form.isAvailable !== wasAvailable) {
+          try {
+            saved =
+              (await MenuService.setItemStock(item.id, { isAvailable: form.isAvailable })) ?? saved;
+          } catch (stockError: unknown) {
+            toast.error(
+              isApiStatus(stockError, 409)
+                ? t("menu.stock_scheduled")
+                : getApiErrorMessage(stockError, t("menu.stock_failed")),
+            );
+          }
+        }
+        const scheduled = await applySchedule(item.id);
+        if (scheduled) saved = { ...(saved ?? item), ...scheduled };
+        onSaved(
+          saved ? { ...item, ...saved } : ({ ...item, ...payload, id: item.id } as MenuItem),
+          sectionId,
+        );
+      } else {
+        const created = await MenuService.createItem({
+          ...payload,
+          isAvailable: form.isAvailable,
+          sortOrder: nextSortOrder,
+        });
+        const scheduled = created?.id ? await applySchedule(created.id) : null;
+        onSaved(created && scheduled ? { ...created, ...scheduled } : created, sectionId);
+      }
+      toast.success(t("menu.item_saved"));
+      onClose();
+    } catch (error: unknown) {
+      toast.error(getApiErrorMessage(error, t("item.save_failed")));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const busy = saving || uploading;
+  const priceSuffix = money.code ? ` (${money.code})` : "";
+  // Lira prices are whole numbers; offering cents there only invites typos.
+  const priceStep = money.decimals === 0 ? "1" : "0.01";
+
   return (
-    <div style={{
-      position: 'fixed', inset: 0,
-      backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 50,
-      display: 'flex', alignItems: 'center', justifyContent: 'center'
-    }}>
-      <div className="glass-panel" style={{ width: '100%', maxWidth: '500px', padding: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{item ? t('item.edit_title') : t('item.add_title')}</h2>
-          <button onClick={onClose} aria-label={t('common.close')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-            <X size={24} />
+    <Modal
+      open={isOpen}
+      onClose={onClose}
+      title={item ? t("item.edit_title") : t("item.add_title")}
+      dismissible={!saving}
+      footer={
+        <>
+          <button type="button" className="btn-outline" onClick={onClose} disabled={saving}>
+            {t("common.cancel")}
           </button>
+          <button type="submit" form={formId} className="btn-primary" disabled={busy}>
+            <Busy
+              busy={saving}
+              label={uploading ? t("menu.image_uploading") : t("item.save")}
+              busyLabel={t("common.saving")}
+            />
+          </button>
+        </>
+      }
+    >
+      <form
+        id={formId}
+        onSubmit={handleSubmit}
+        noValidate
+        style={{ display: "flex", flexDirection: "column", gap: "18px" }}
+      >
+        <div className="field">
+          <label htmlFor={`${formId}-name`} className="field-label">
+            {t("item.name")} *
+          </label>
+          <input
+            id={`${formId}-name`}
+            type="text"
+            className="form-input"
+            value={form.name}
+            maxLength={200}
+            aria-invalid={!!errors.name}
+            aria-describedby={errors.name ? `${formId}-name-error` : undefined}
+            onChange={(e) => set("name", e.target.value)}
+          />
+          {errors.name && (
+            <p id={`${formId}-name-error`} className="field-hint" style={{ color: "var(--error)" }}>
+              {errors.name}
+            </p>
+          )}
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.name')} *</label>
-            <input 
-              required 
-              type="text" 
-              className="form-input" 
-              value={formData.name}
-              onChange={e => setFormData({ ...formData, name: e.target.value })}
-            />
-          </div>
+        <div className="field">
+          <label htmlFor={`${formId}-description`} className="field-label">
+            {t("item.description")}
+          </label>
+          <textarea
+            id={`${formId}-description`}
+            className="form-input"
+            rows={3}
+            value={form.description}
+            onChange={(e) => set("description", e.target.value)}
+          />
+        </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.description')}</label>
-            <textarea 
-              className="form-input" 
-              rows={3}
-              value={formData.description}
-              onChange={e => setFormData({ ...formData, description: e.target.value })}
-            />
-          </div>
-
-          <div style={{ display: 'flex', gap: '16px' }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.price')} *</label>
-              <input 
-                required 
-                type="number" 
-                step="0.01"
-                className="form-input" 
-                value={formData.price}
-                onChange={e => setFormData({ ...formData, price: parseFloat(e.target.value) })}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.discounted_price')}</label>
-              <input 
-                type="number" 
-                step="0.01"
-                className="form-input" 
-                value={formData.discountedPrice}
-                onChange={e => setFormData({ ...formData, discountedPrice: parseFloat(e.target.value) })}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('item.image_url')}</label>
-            <input 
-              type="url" 
-              className="form-input" 
-              value={formData.image}
-              onChange={e => setFormData({ ...formData, image: e.target.value })}
-            />
-          </div>
-
-          <div style={{ display: 'flex', gap: '16px', marginTop: '8px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input 
-                type="checkbox" 
-                checked={formData.isActive}
-                onChange={e => setFormData({ ...formData, isActive: e.target.checked })}
-              />
-              {t('item.active')}
+        <div
+          className="responsive-grid-2"
+          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}
+        >
+          <div className="field">
+            <label htmlFor={`${formId}-price`} className="field-label">
+              {t("item.price")}
+              {priceSuffix} *
             </label>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-              <input 
-                type="checkbox" 
-                checked={formData.isAvailable}
-                onChange={e => setFormData({ ...formData, isAvailable: e.target.checked })}
-              />
-              {t('item.available')}
-            </label>
+            <input
+              id={`${formId}-price`}
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step={priceStep}
+              className="form-input force-ltr"
+              value={form.price}
+              aria-invalid={!!errors.price}
+              aria-describedby={errors.price ? `${formId}-price-error` : undefined}
+              onChange={(e) => set("price", e.target.value)}
+            />
+            {errors.price ? (
+              <p id={`${formId}-price-error`} className="field-hint" style={{ color: "var(--error)" }}>
+                {errors.price}
+              </p>
+            ) : (
+              form.price.trim() !== "" &&
+              Number.isFinite(Number(form.price)) &&
+              money.secondary(form.price) && (
+                <p className="field-hint force-ltr">{money.secondary(form.price)}</p>
+              )
+            )}
           </div>
+          <div className="field">
+            <label htmlFor={`${formId}-discount`} className="field-label">
+              {t("item.discounted_price")}
+              {priceSuffix}
+            </label>
+            <input
+              id={`${formId}-discount`}
+              type="number"
+              inputMode="decimal"
+              min={0}
+              step={priceStep}
+              className="form-input force-ltr"
+              value={form.discountedPrice}
+              placeholder={t("common.optional")}
+              aria-invalid={!!errors.discountedPrice}
+              aria-describedby={`${formId}-discount-hint`}
+              onChange={(e) => set("discountedPrice", e.target.value)}
+            />
+            <p
+              id={`${formId}-discount-hint`}
+              className="field-hint"
+              style={errors.discountedPrice ? { color: "var(--error)" } : undefined}
+            >
+              {errors.discountedPrice ?? t("menu.discount_hint")}
+            </p>
+          </div>
+        </div>
 
-          <button type="submit" disabled={loading} className="btn-primary" style={{ marginTop: '16px', justifyContent: 'center' }}>
-            {loading ? <Loader2 className="animate-spin" size={20} /> : t('item.save')}
-          </button>
-        </form>
-      </div>
-    </div>
+        <ImagePicker
+          value={form.image}
+          onChange={(url) => set("image", url)}
+          upload={MenuService.uploadImage}
+          accept={MENU_IMAGE_ACCEPT}
+          disabled={saving}
+          onUploadingChange={setUploading}
+          validate={(file) => {
+            const problem = checkMenuImage(file);
+            if (problem === "type") return t("menu.image_bad_type");
+            if (problem === "size") {
+              return t("menu.image_too_large", {
+                size: (file.size / (1024 * 1024)).toFixed(1),
+                max: MENU_IMAGE_MAX_BYTES / (1024 * 1024),
+              });
+            }
+            return null;
+          }}
+        />
+
+        <fieldset
+          style={{ border: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: "12px" }}
+        >
+          <legend className="sr-only">{t("menu.visibility_legend")}</legend>
+          {(
+            [
+              ["isActive", t("item.active"), t("menu.active_hint")],
+              ["isAvailable", t("item.available"), t("menu.available_hint")],
+              ["isPopular", t("menu.popular"), t("menu.popular_hint")],
+            ] as const
+          ).map(([key, label, hint]) => (
+            <label
+              key={key}
+              htmlFor={`${formId}-${key}`}
+              style={{ display: "flex", alignItems: "flex-start", gap: "10px", cursor: "pointer" }}
+            >
+              <input
+                id={`${formId}-${key}`}
+                type="checkbox"
+                checked={form[key]}
+                onChange={(e) => set(key, e.target.checked)}
+                style={{ marginTop: "3px", accentColor: "var(--accent-primary)" }}
+              />
+              <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                <span style={{ fontWeight: 600, fontSize: "14px" }}>{label}</span>
+                <span className="field-hint">{hint}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        {schedules.length > 0 && (
+          <StockScheduleSelect
+            schedules={schedules}
+            value={scheduleId}
+            onChange={setScheduleId}
+            hint={
+              !scheduleId && sectionSchedule
+                ? t("stock.follows_section_schedule", { name: sectionSchedule.name })
+                : t("stock.item_schedule_hint")
+            }
+          />
+        )}
+      </form>
+    </Modal>
   );
 }

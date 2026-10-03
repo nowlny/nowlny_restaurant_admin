@@ -1,222 +1,131 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { Loader2, Plus, Edit2, Trash2, Video } from "lucide-react";
-import { ReelsService } from "@/services/api/reels";
-import ReelModal from "./components/ReelModal";
+import { useEffect, useState } from "react";
+import { Clapperboard, Plus, RefreshCw } from "lucide-react";
+import { ReelsService, type Reel } from "@/services/api/reels";
+import { getApiErrorMessage } from "@/services/api/errors";
+import { useFeedback } from "@/components/ui/Feedback";
 import { useI18n } from "@/lib/i18n";
+import styles from "@/components/media/media.module.css";
+import ReelModal from "./components/ReelModal";
+import ReelCard from "./components/ReelCard";
+
+/** `/reels/me` pages at 10 by default, which silently hid an owner's older reels. */
+const PAGE_LIMIT = 50;
+
+type LoadState = { status: "loading" } | { status: "ready" } | { status: "error"; message: string };
 
 export default function ReelsPage() {
   const { t } = useI18n();
-  const [reels, setReels] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingReel, setEditingReel] = useState<any>(null);
+  const { toast, confirm } = useFeedback();
+  const [reels, setReels] = useState<Reel[]>([]);
+  const [load, setLoad] = useState<LoadState>({ status: "loading" });
+  const [reloadKey, setReloadKey] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // `undefined` = editor closed, `null` = creating.
+  const [editing, setEditing] = useState<Reel | null | undefined>(undefined);
 
   useEffect(() => {
-    fetchReels();
-  }, []);
+    let cancelled = false;
+    ReelsService.getOwnReels({ limit: PAGE_LIMIT })
+      .then((data) => {
+        if (cancelled) return;
+        setReels(data);
+        setLoad({ status: "ready" });
+      })
+      .catch((err: unknown) => {
+        console.error("Failed to fetch reels", err);
+        // Fallback copy is resolved at render, so `t` stays out of the deps.
+        if (!cancelled) setLoad({ status: "error", message: getApiErrorMessage(err, "") });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
-  const fetchReels = async () => {
-    setLoading(true);
+  const retry = () => {
+    setLoad({ status: "loading" });
+    setReloadKey((n) => n + 1);
+  };
+
+  const handleDelete = async (reel: Reel) => {
+    const ok = await confirm({
+      title: t("media.delete_reel_title"),
+      message: t("reels.confirm_delete"),
+      danger: true,
+    });
+    if (!ok) return;
+    setDeletingId(reel.id);
     try {
-      const data = await ReelsService.getOwnReels();
-      setReels(data);
+      await ReelsService.deleteReel(reel.id);
+      setReels((current) => current.filter((r) => r.id !== reel.id));
+      toast.success(t("media.reel_deleted"));
     } catch (err) {
-      console.error("Failed to fetch reels", err);
+      console.error("Failed to delete reel", err);
+      toast.error(getApiErrorMessage(err, t("media.delete_failed")));
     } finally {
-      setLoading(false);
+      setDeletingId(null);
     }
   };
 
-  const handleDelete = async (reelId: string) => {
-    if (confirm(t("reels.confirm_delete"))) {
-      try {
-        await ReelsService.deleteReel(reelId);
-        fetchReels();
-      } catch (err) {
-        console.error("Failed to delete reel", err);
-      }
-    }
-  };
+  const openCreate = () => setEditing(null);
 
   return (
-    <div
-      className="animate-fade-in"
-      style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-    >
-      <header
-        className="responsive-header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-        }}
-      >
+    <div className="animate-fade-in">
+      <header className="page-header">
         <div>
-          <h1
-            style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
-          >
-            {t("reels.title")}
-          </h1>
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("reels.subtitle")}
-          </p>
+          <h1 className="page-title">{t("reels.title")}</h1>
+          <p className="page-subtitle">{t("reels.subtitle")}</p>
         </div>
-        <button
-          className="btn-primary"
-          onClick={() => {
-            setEditingReel(null);
-            setIsModalOpen(true);
-          }}
-        >
+        <button type="button" className="btn-primary" onClick={openCreate}>
           <Plus size={20} /> {t("reels.create")}
         </button>
       </header>
 
-      {loading ? (
-        <div
-          style={{ display: "flex", justifyContent: "center", padding: "40px" }}
-        >
-          <Loader2
-            className="animate-spin"
-            size={32}
-            color="var(--accent-primary)"
-          />
+      {load.status === "loading" ? (
+        <div className={styles.grid} aria-busy="true" aria-label={t("common.loading")}>
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="skeleton" style={{ aspectRatio: "9 / 16", borderRadius: "var(--radius-lg)" }} />
+          ))}
+        </div>
+      ) : load.status === "error" ? (
+        <div className="empty-state" role="alert">
+          <h3>{load.message || t("media.load_reels_failed")}</h3>
+          <button type="button" className="btn-outline" onClick={retry}>
+            <RefreshCw size={18} /> {t("common.retry")}
+          </button>
         </div>
       ) : reels.length === 0 ? (
-        <div
-          className="glass-panel"
-          style={{ padding: "40px", textAlign: "center" }}
-        >
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("reels.empty")}
-          </p>
+        <div className="empty-state">
+          <Clapperboard size={40} color="var(--accent-primary)" aria-hidden="true" />
+          <h3>{t("media.reels_empty_title")}</h3>
+          <p>{t("reels.empty")}</p>
+          <button type="button" className="btn-primary" onClick={openCreate} style={{ marginTop: "6px" }}>
+            <Plus size={18} /> {t("reels.create")}
+          </button>
         </div>
       ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            gap: "24px",
-          }}
-        >
+        <div className={styles.grid}>
           {reels.map((reel) => (
-            <div
+            <ReelCard
               key={reel.id}
-              className="glass-panel"
-              style={{
-                overflow: "hidden",
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <div
-                style={{
-                  height: "450px",
-                  backgroundColor: "var(--bg-elevated)",
-                  position: "relative",
-                }}
-              >
-                <video
-                  src={reel.videoUrl}
-                  poster={reel.thumbnailUrl}
-                  controls
-                  playsInline
-                  style={{
-                    width: "100%",
-                    height: "100%",
-                    objectFit: "cover",
-                  }}
-                />
-                
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    insetInline: 0,
-                    background: "linear-gradient(rgba(0,0,0,0.5), transparent)",
-                    padding: "16px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    pointerEvents: "none",
-                  }}
-                >
-                  <span
-                    style={{
-                      color: "white",
-                      fontSize: "12px",
-                      fontWeight: "600",
-                    }}
-                  >
-                    {reel.status === 'active' ? t("reels.active") : t("reels.hidden")}
-                  </span>
-                </div>
-              </div>
-              <div
-                style={{
-                  padding: "16px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                }}
-              >
-                <p
-                  style={{
-                    fontSize: "14px",
-                    color: "var(--text-secondary)",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                    overflow: "hidden",
-                    minHeight: "40px",
-                  }}
-                >
-                  {reel.caption || t("reels.no_caption")}
-                </p>
-                
-                {reel.menuItemId && (
-                  <div style={{ fontSize: "12px", color: "var(--accent-primary)", fontWeight: "600" }}>
-                    {t("reels.linked_item")}
-                  </div>
-                )}
-                
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <button
-                    onClick={() => {
-                      setEditingReel(reel);
-                      setIsModalOpen(true);
-                    }}
-                    className="btn-outline"
-                    style={{ flex: 1, justifyContent: "center" }}
-                  >
-                    <Edit2 size={16} /> {t("common.edit")}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(reel.id)}
-                    aria-label={t("common.delete")}
-                    className="btn-outline"
-                    style={{
-                      padding: "8px 12px",
-                      color: "var(--error)",
-                      borderColor: "var(--error)",
-                    }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-            </div>
+              reel={reel}
+              deleting={deletingId === reel.id}
+              onEdit={() => setEditing(reel)}
+              onDelete={() => void handleDelete(reel)}
+            />
           ))}
         </div>
       )}
 
-      <ReelModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        reel={editingReel}
-        onSave={fetchReels}
-      />
+      {editing !== undefined && (
+        <ReelModal
+          key={editing?.id ?? "new"}
+          reel={editing}
+          onClose={() => setEditing(undefined)}
+          onSave={() => setReloadKey((n) => n + 1)}
+        />
+      )}
     </div>
   );
 }

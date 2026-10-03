@@ -1,528 +1,461 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
-import {
-  Loader2,
-  X,
-  Clock,
-  CheckCircle2,
-  Truck,
-  PackageCheck,
-  AlertCircle,
-  Building2,
-  Navigation,
-  UserRound,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
 import DriverTrackingModal from "@/components/DriverTrackingModal";
+import { useFeedback } from "@/components/ui/Feedback";
+import AcceptOrderModal from "@/components/orders/AcceptOrderModal";
+import DispatchModal, { type DispatchResult } from "@/components/orders/DispatchModal";
+import OrderBoard, { type BoardBuckets } from "@/components/orders/OrderBoard";
+import type { OrderActionHandler } from "@/components/orders/OrderCard";
+import OrderDetailModal from "@/components/orders/OrderDetailModal";
+import OrderList from "@/components/orders/OrderList";
+import RejectOrderModal from "@/components/orders/RejectOrderModal";
+import { ACTIVE_PICKUP_STATUSES } from "@/components/orders/orderMeta";
+import styles from "@/components/orders/orders.module.css";
 import {
-  DeliveryIntegration,
   OrderStatus,
   OrdersService,
   PickupRequest,
-  OrderAddress,
   RestaurantOrder,
-  RestaurantDriver,
 } from "@/services/api/orders";
 import { getApiErrorMessage } from "@/services/api/errors";
-import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
+import { intlLocale, useI18n } from "@/lib/i18n";
+import { useRestaurant } from "@/lib/restaurantContext";
 
-type BoardOrderStatus = Exclude<OrderStatus, "cancelled" | "rejected">;
+const POLL_MS = 15_000;
 
-const ORDER_STATUS_KEYS: Record<OrderStatus, MessageKey> = {
-  pending: "order_status.pending",
-  confirmed: "order_status.confirmed",
-  out_for_delivery: "order_status.out_for_delivery",
-  delivered: "order_status.delivered",
-  cancelled: "order_status.cancelled",
-  rejected: "order_status.rejected",
-};
+type View = "active" | "scheduled" | "closed";
+
+const timeOf = (iso: string | null | undefined) => (iso ? new Date(iso).getTime() || 0 : 0);
 
 /**
- * Banners are stored as a key plus any server wording rather than a finished
- * sentence. `fetchOrders` runs on a 15s interval, so it must not close over
- * `t` — a new closure each render would restart the poll on every pass.
+ * Keep the previous object when the server copy hasn't changed, so memoised
+ * cards for untouched orders skip re-rendering on every poll.
  */
-type Notice = {
-  key: MessageKey;
-  text?: string;
-  vars?: Record<string, string | number>;
-} | null;
+function reconcileOrders(previous: RestaurantOrder[], next: RestaurantOrder[]) {
+  const byId = new Map(previous.map((order) => [order.id, order]));
+  return next.map((order) => {
+    const old = byId.get(order.id);
+    return old &&
+      order.updatedAt &&
+      old.updatedAt === order.updatedAt &&
+      old.status === order.status &&
+      old.seenAt === order.seenAt &&
+      old.escalationLevel === order.escalationLevel
+      ? old
+      : order;
+  });
+}
 
-const ORDER_STATUS_STYLES: Record<
-  OrderStatus,
-  { backgroundColor: string; color: string }
-> = {
-  pending: {
-    backgroundColor: "rgba(234, 179, 8, 0.1)",
-    color: "var(--warning)",
-  },
-  confirmed: {
-    backgroundColor: "rgba(59, 130, 246, 0.1)",
-    color: "#3b82f6",
-  },
-  out_for_delivery: {
-    backgroundColor: "rgba(168, 85, 247, 0.1)",
-    color: "#a855f7",
-  },
-  delivered: {
-    backgroundColor: "rgba(16, 185, 129, 0.1)",
-    color: "var(--success)",
-  },
-  cancelled: {
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
-    color: "var(--error)",
-  },
-  rejected: {
-    backgroundColor: "rgba(239, 68, 68, 0.1)",
-    color: "var(--error)",
-  },
-};
+function reconcilePickups(previous: PickupRequest[], next: PickupRequest[]) {
+  const byId = new Map(previous.map((request) => [request.id, request]));
+  return next.map((request) => {
+    const old = byId.get(request.id);
+    return old && old.status === request.status && old.driver?.id === request.driver?.id
+      ? old
+      : request;
+  });
+}
+
+const TITLE_PREFIX = /^\(\d+\)\s*/;
 
 export default function OrdersPage() {
   const { t, locale } = useI18n();
+  const { toast, confirm } = useFeedback();
+  const { restaurant } = useRestaurant();
+  const fallbackCurrency = restaurant?.currency;
+
   const [orders, setOrders] = useState<RestaurantOrder[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  const [selectedOrder, setSelectedOrder] = useState<RestaurantOrder | null>(null);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<Notice>(null);
-  const [actionSuccess, setActionSuccess] = useState<Notice>(null);
-  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
-
-  const [isRejectModalOpen, setIsRejectModalOpen] = useState(false);
-  const [orderToReject, setOrderToReject] = useState<string | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
-
   const [pickupRequests, setPickupRequests] = useState<PickupRequest[]>([]);
-  const [dispatchOrder, setDispatchOrder] = useState<RestaurantOrder | null>(null);
-  const [trackingOrder, setTrackingOrder] = useState<RestaurantOrder | null>(null);
-  const [drivers, setDrivers] = useState<RestaurantDriver[]>([]);
-  const [deliveryIntegration, setDeliveryIntegration] =
-    useState<DeliveryIntegration | null>(null);
-  const [selectedDriverId, setSelectedDriverId] = useState("");
-  const [loadingDispatchOptions, setLoadingDispatchOptions] = useState(false);
-  const [activeMobileTab, setActiveMobileTab] =
-    useState<BoardOrderStatus>("pending");
+  const [loading, setLoading] = useState(true);
+  // null = no error; a string (possibly empty) = the server's wording, if any.
+  // Kept free of `t` so the polling callback never has to close over it.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [freshIds, setFreshIds] = useState<ReadonlySet<string>>(() => new Set());
 
-  useEffect(() => {
-    if (selectedOrder || isRejectModalOpen || dispatchOrder || trackingOrder) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [selectedOrder, isRejectModalOpen, dispatchOrder, trackingOrder]);
+  const [view, setView] = useState<View>("active");
+  const [closedOrders, setClosedOrders] = useState<RestaurantOrder[]>([]);
+  const [closedLoading, setClosedLoading] = useState(false);
+  const [closedError, setClosedError] = useState<string | null>(null);
+
+  // Snapshots; the live copy is looked up in `orders` so polls keep them current.
+  const [selected, setSelected] = useState<RestaurantOrder | null>(null);
+  const [tracking, setTracking] = useState<RestaurantOrder | null>(null);
+  const [dispatching, setDispatching] = useState<RestaurantOrder | null>(null);
+  const [accepting, setAccepting] = useState<RestaurantOrder | null>(null);
+  const [rejecting, setRejecting] = useState<RestaurantOrder | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [busyPickupId, setBusyPickupId] = useState<string | null>(null);
+
+  const inFlightRef = useRef(false);
+  // Bumped by every optimistic edit. A poll that started before the edit would
+  // otherwise land afterwards and briefly revert it.
+  const editSeqRef = useRef(0);
+  const knownPendingRef = useRef<Set<string> | null>(null);
+  const seenRequestedRef = useRef<Set<string>>(new Set());
 
   const fetchOrders = useCallback(async (showLoader = true) => {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
+    const seq = editSeqRef.current;
     if (showLoader) setLoading(true);
     try {
       const [data, requests] = await Promise.all([
         OrdersService.getOrders({ limit: 100 }),
-        OrdersService.getPickupRequests().catch(() => []),
+        OrdersService.getPickupRequests().catch(() => null),
       ]);
-      setOrders(data);
-      setPickupRequests(requests);
+      if (seq !== editSeqRef.current) return;
+
+      setOrders((previous) => reconcileOrders(previous, data));
+      if (requests) setPickupRequests((previous) => reconcilePickups(previous, requests));
       setLastSyncedAt(new Date());
-      setSelectedOrder((currentOrder) => {
-        if (!currentOrder) return null;
-        return data.find((order) => order.id === currentOrder.id) ?? currentOrder;
+      setLoadError(null);
+
+      // Flag pending orders that weren't there on the previous poll. The first
+      // load sets the baseline, so a page refresh doesn't light up everything.
+      const pendingIds = data.filter((order) => order.status === "pending").map((order) => order.id);
+      const known = knownPendingRef.current;
+      const added = known ? pendingIds.filter((id) => !known.has(id)) : [];
+      knownPendingRef.current = new Set(pendingIds);
+      setFreshIds((previous) => {
+        const stillPending = new Set(pendingIds);
+        const next = new Set([...previous].filter((id) => stillPending.has(id)));
+        added.forEach((id) => next.add(id));
+        return next.size === previous.size && [...next].every((id) => previous.has(id))
+          ? previous
+          : next;
       });
-      setTrackingOrder((currentOrder) => {
-        if (!currentOrder) return null;
-        return data.find((order) => order.id === currentOrder.id) ?? currentOrder;
-      });
-    } catch (fetchError: unknown) {
-      setActionError({
-        key: "orders.load_failed",
-        text: getApiErrorMessage(fetchError, ""),
-      });
+    } catch (error: unknown) {
+      setLoadError(getApiErrorMessage(error, ""));
     } finally {
+      inFlightRef.current = false;
       if (showLoader) setLoading(false);
     }
   }, []);
 
+  // Poll only while the tab is visible; catch up the moment it's shown again.
   useEffect(() => {
-    const initialFetch = window.setTimeout(() => void fetchOrders(), 0);
-    const interval = window.setInterval(() => void fetchOrders(false), 15_000);
+    const initial = window.setTimeout(() => void fetchOrders(), 0);
+    const interval = window.setInterval(() => {
+      if (!document.hidden) void fetchOrders(false);
+    }, POLL_MS);
+    const onVisibility = () => {
+      if (!document.hidden) void fetchOrders(false);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    // The app-wide live alert answered an order or heard a socket event.
+    const onOrdersChanged = () => void fetchOrders(false);
+    window.addEventListener("nowlny:orders-changed", onOrdersChanged);
     return () => {
-      window.clearTimeout(initialFetch);
+      window.clearTimeout(initial);
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("nowlny:orders-changed", onOrdersChanged);
     };
   }, [fetchOrders]);
 
-  const handleTrackedOrderStatus = useCallback(
-    (orderId: string, status: OrderStatus) => {
-      const updateStatus = (order: RestaurantOrder) =>
-        order.id === orderId ? { ...order, status } : order;
-      setOrders((currentOrders) => currentOrders.map(updateStatus));
-      setSelectedOrder((currentOrder) =>
-        currentOrder ? updateStatus(currentOrder) : null,
-      );
-      setTrackingOrder((currentOrder) =>
-        currentOrder ? updateStatus(currentOrder) : null,
-      );
+  // `/orders?order=<id>` (from a notification) opens that order once.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const orderId = url.searchParams.get("order");
+    if (!orderId) return;
+    url.searchParams.delete("order");
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+    // Not cancelled on cleanup: the param is already gone, so a dev-mode
+    // effect re-run would never get another chance to open it.
+    OrdersService.getOrderById(orderId)
+      .then((order) => {
+        if (order) setSelected(order);
+      })
+      .catch(() => {});
+  }, []);
+
+  const patchOrder = useCallback((id: string, patch: Partial<RestaurantOrder>) => {
+    editSeqRef.current += 1;
+    const apply = (order: RestaurantOrder) => (order.id === id ? { ...order, ...patch } : order);
+    setOrders((current) => current.map(apply));
+    setClosedOrders((current) => current.map(apply));
+  }, []);
+
+  const clearFresh = useCallback((id: string) => {
+    setFreshIds((previous) => {
+      if (!previous.has(id)) return previous;
+      const next = new Set(previous);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  /** PATCH .../seen once per order per page session; the server keeps the first stamp. */
+  const markSeen = useCallback((order: RestaurantOrder) => {
+    if (order.status !== "pending" || order.seenAt) return;
+    const requested = seenRequestedRef.current;
+    if (requested.has(order.id)) return;
+    requested.add(order.id);
+    OrdersService.markSeen(order.id)
+      .then((updated) => {
+        const seenAt = updated?.seenAt ?? new Date().toISOString();
+        setOrders((current) =>
+          current.map((item) => (item.id === order.id ? { ...item, seenAt } : item)),
+        );
+      })
+      .catch(() => {
+        // Let a later poll try again rather than never reporting it.
+        requested.delete(order.id);
+      });
+  }, []);
+
+  const buckets = useMemo(() => {
+    const next: BoardBuckets & { scheduled: RestaurantOrder[] } = {
+      pending: [],
+      confirmed: [],
+      out_for_delivery: [],
+      delivered: [],
+      scheduled: [],
+    };
+    for (const order of orders) {
+      if (order.status in next) next[order.status as keyof typeof next].push(order);
+    }
+    // Kitchen works first-in-first-out; the general list comes newest first.
+    next.pending.sort((a, b) => timeOf(a.createdAt) - timeOf(b.createdAt));
+    next.scheduled.sort((a, b) => timeOf(a.scheduledFor) - timeOf(b.scheduledFor));
+    return next;
+  }, [orders]);
+
+  const ordersById = useMemo(() => new Map(orders.map((order) => [order.id, order])), [orders]);
+
+  const pickupByOrderId = useMemo(() => {
+    const map = new Map<string, PickupRequest>();
+    for (const request of pickupRequests) {
+      const orderId = request.order?.id;
+      if (orderId && !map.has(orderId) && ACTIVE_PICKUP_STATUSES.includes(request.status)) {
+        map.set(orderId, request);
+      }
+    }
+    return map;
+  }, [pickupRequests]);
+
+  // A pending order on screen while the tab is visible counts as "seen".
+  useEffect(() => {
+    if (document.hidden) return;
+    buckets.pending.forEach(markSeen);
+  }, [buckets.pending, markSeen]);
+
+  // "(3) Nowlny…" in the tab title while orders wait for an answer.
+  const pendingCount = buckets.pending.length;
+  useEffect(() => {
+    const base = document.title.replace(TITLE_PREFIX, "");
+    document.title = pendingCount > 0 ? `(${pendingCount}) ${base}` : base;
+  }, [pendingCount]);
+  useEffect(
+    () => () => {
+      document.title = document.title.replace(TITLE_PREFIX, "");
     },
     [],
   );
 
-  // Status transitions
-  const handleAccept = async (orderId: string) => {
-    setActionError(null);
-    setActionSuccess(null);
-    setActionLoading("accept_" + orderId);
+  const loadClosed = useCallback(async () => {
+    setClosedLoading(true);
+    setClosedError(null);
     try {
-      await OrdersService.acceptOrder(orderId);
-      setActionSuccess({ key: "orders.accepted_success" });
-      await fetchOrders(false);
-    } catch (acceptError: unknown) {
-      setActionError({
-        key: "orders.accept_failed",
-        text: getApiErrorMessage(acceptError, ""),
-      });
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const confirmReject = (orderId: string) => {
-    setOrderToReject(orderId);
-    setRejectReason("");
-    setIsRejectModalOpen(true);
-  };
-
-  const handleReject = async () => {
-    if (!orderToReject || !rejectReason) return;
-    setActionError(null);
-    setActionSuccess(null);
-    setActionLoading("reject_" + orderToReject);
-    try {
-      await OrdersService.rejectOrder(orderToReject, rejectReason);
-      setIsRejectModalOpen(false);
-      setOrderToReject(null);
-      setActionSuccess({ key: "orders.rejected_success" });
-      await fetchOrders(false);
-    } catch (rejectError: unknown) {
-      setActionError({
-        key: "orders.reject_failed",
-        text: getApiErrorMessage(rejectError, ""),
-      });
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const openDispatchModal = async (order: RestaurantOrder) => {
-    setDispatchOrder(order);
-    setSelectedDriverId("");
-    setLoadingDispatchOptions(true);
-    setActionError(null);
-    setActionSuccess(null);
-
-    try {
-      const [driverResult, integrationResult] = await Promise.allSettled([
-        OrdersService.getDrivers(),
-        OrdersService.getDeliveryIntegration(),
+      const [rejected, cancelled] = await Promise.all([
+        OrdersService.getOrders({ status: "rejected", limit: 25 }),
+        OrdersService.getOrders({ status: "cancelled", limit: 25 }),
       ]);
-      const activeDrivers =
-        driverResult.status === "fulfilled" ? driverResult.value : [];
-      const integration =
-        integrationResult.status === "fulfilled" ? integrationResult.value : null;
-      setDrivers(activeDrivers);
-      setDeliveryIntegration(integration);
-      const defaultDriver = activeDrivers.find((driver) => driver.isAvailable);
-      setSelectedDriverId(defaultDriver?.id ?? "");
-
-      if (driverResult.status === "rejected" && integrationResult.status === "rejected") {
-        setActionError({ key: "dispatch.options_failed" });
-      }
+      setClosedOrders(
+        [...rejected, ...cancelled]
+          .sort(
+            (a, b) =>
+              timeOf(b.updatedAt ?? b.createdAt) - timeOf(a.updatedAt ?? a.createdAt),
+          )
+          .slice(0, 40),
+      );
+    } catch (error) {
+      setClosedError(getApiErrorMessage(error, ""));
     } finally {
-      setLoadingDispatchOptions(false);
+      setClosedLoading(false);
     }
+  }, []);
+
+  const switchView = (next: View) => {
+    setView(next);
+    if (next === "closed") void loadClosed();
   };
 
-  const handleOwnDriverDispatch = async () => {
-    if (!dispatchOrder || !selectedDriverId) return;
-    setActionLoading(`dispatch_driver_${dispatchOrder.id}`);
-    setActionError(null);
+  // ── Actions ─────────────────────────────────────────────────────────────
+
+  const handleCancelPickup = async (pickup: PickupRequest) => {
+    const ok = await confirm({
+      title: t("ordersx.cancel_pickup_title"),
+      message: t("ordersx.cancel_pickup_body", {
+        company: pickup.company?.name ?? t("ordersx.delivery_partner"),
+      }),
+      danger: true,
+      confirmLabel: t("ordersx.cancel_pickup"),
+      cancelLabel: t("ordersx.cancel_pickup_keep"),
+    });
+    if (!ok) return;
+    setBusyPickupId(pickup.id);
     try {
-      await OrdersService.assignDriver(dispatchOrder.id, selectedDriverId);
-      await OrdersService.markOutForDelivery(dispatchOrder.id);
-      setDispatchOrder(null);
-      setActionSuccess({ key: "dispatch.driver_assigned_success" });
-      await fetchOrders(false);
-    } catch (dispatchError: unknown) {
-      setActionError({
-        key: "dispatch.driver_assign_failed",
-        text: getApiErrorMessage(dispatchError, ""),
-      });
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handlePartnerDispatch = async () => {
-    const company = deliveryIntegration?.company;
-    if (!dispatchOrder || deliveryIntegration?.status !== "accepted" || !company) return;
-    setActionLoading(`dispatch_partner_${dispatchOrder.id}`);
-    setActionError(null);
-    try {
-      const request = await OrdersService.requestPickup(dispatchOrder.id, company.id);
-      setPickupRequests((current) => [request, ...current]);
-      setDispatchOrder(null);
-      setActionSuccess({
-        key: "dispatch.pickup_requested",
-        vars: { company: company.name },
-      });
-      await fetchOrders(false);
-    } catch (dispatchError: unknown) {
-      setActionError({
-        key: "dispatch.pickup_failed",
-        text: getApiErrorMessage(dispatchError, ""),
-      });
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const activePickupForOrder = (orderId: string) =>
-    pickupRequests.find(
-      (request) =>
-        request.order?.id === orderId &&
-        ["pending", "accepted", "driver_assigned", "picked_up"].includes(
-          request.status,
+      await OrdersService.cancelPickupRequest(pickup.id);
+      editSeqRef.current += 1;
+      setPickupRequests((current) =>
+        current.map((request) =>
+          request.id === pickup.id ? { ...request, status: "cancelled" } : request,
         ),
-    );
+      );
+      toast.success(t("ordersx.pickup_cancelled"));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, t("ordersx.pickup_cancel_failed")));
+    } finally {
+      setBusyPickupId(null);
+      void fetchOrders(false);
+    }
+  };
 
-  // Kanban buckets
-  const pendingOrders = orders.filter((o) => o.status === "pending");
-  const confirmedOrders = orders.filter((o) => o.status === "confirmed");
-  const outForDeliveryOrders = orders.filter(
-    (o) => o.status === "out_for_delivery",
+  // Cards and the drawer get one stable callback; the latest handlers (which
+  // close over `t`, a new function each render) are read through a ref.
+  const actionRef = useRef<OrderActionHandler>(() => {});
+  useEffect(() => {
+    actionRef.current = (action, order, pickup) => {
+      switch (action) {
+        case "open":
+          setSelected(order);
+          clearFresh(order.id);
+          markSeen(order);
+          break;
+        case "accept":
+          clearFresh(order.id);
+          setAccepting(order);
+          break;
+        case "reject":
+          clearFresh(order.id);
+          setRejecting(order);
+          break;
+        case "dispatch":
+          setDispatching(order);
+          break;
+        case "track":
+          setTracking(order);
+          break;
+        case "cancelPickup":
+          if (pickup) void handleCancelPickup(pickup);
+          break;
+      }
+    };
+  });
+  const onAction = useCallback<OrderActionHandler>(
+    (action, order, pickup) => actionRef.current(action, order, pickup),
+    [],
   );
-  const deliveredOrders = orders.filter((o) => o.status === "delivered");
 
-  const noticeText = (notice: Notice) =>
-    notice ? notice.text || t(notice.key, notice.vars) : "";
-  const statusLabel = (status: OrderStatus) => t(ORDER_STATUS_KEYS[status]);
-
-  const formatOrderCurrency = (
-    order: RestaurantOrder,
-    value: number | string | undefined,
-  ) => {
-    const currency = order.restaurant?.currency;
-    const code = currency?.code ?? "USD";
+  const confirmAccept = async (prepTimeMinutes: number) => {
+    const order = accepting;
+    if (!order) return;
+    setActionBusy(true);
     try {
-      return new Intl.NumberFormat(intlLocale(locale), {
-        style: "currency",
-        currency: code,
-      }).format(Number(value || 0));
-    } catch {
-      return `${Number(value || 0).toFixed(2)} ${currency?.symbol ?? code}`;
+      const updated = await OrdersService.acceptOrder(order.id, prepTimeMinutes);
+      patchOrder(order.id, {
+        ...(updated ?? {}),
+        status: updated?.status ?? "confirmed",
+        prepTimeMinutes: updated?.prepTimeMinutes ?? prepTimeMinutes,
+      });
+      setAccepting(null);
+      toast.success(t("orders.accepted_success"));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, t("orders.accept_failed")));
+    } finally {
+      setActionBusy(false);
+      // Background refresh; also picks up a 409 (answered on another device).
+      void fetchOrders(false);
     }
   };
 
-  const renderKanbanCard = (
-    order: RestaurantOrder,
-    actions: React.ReactNode,
-  ) => {
-    return (
-      <div
-        key={order.id}
-        onClick={() => setSelectedOrder(order)}
-        style={{
-          padding: "16px",
-          display: "flex",
-          flexDirection: "column",
-          gap: "12px",
-          cursor: "pointer",
-          backgroundColor:
-            selectedOrder?.id === order.id
-              ? "var(--bg-elevated)"
-              : "var(--bg-surface)",
-          border:
-            selectedOrder?.id === order.id
-              ? "1px solid var(--accent-primary)"
-              : "1px solid var(--border-color)",
-          borderRadius: "12px",
-          transition: "all 0.2s ease",
-          boxShadow: "0 4px 6px rgba(0,0,0,0.05)",
-          position: "relative",
-        }}
-        onMouseOver={(e) => {
-          e.currentTarget.style.transform = "translateY(-2px)";
-          e.currentTarget.style.boxShadow = "0 8px 16px rgba(0,0,0,0.1)";
-        }}
-        onMouseOut={(e) => {
-          e.currentTarget.style.transform = "translateY(0)";
-          e.currentTarget.style.boxShadow = "0 4px 6px rgba(0,0,0,0.05)";
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-          }}
-        >
-          <div>
-            <h4
-              style={{
-                fontWeight: "700",
-                fontSize: "14px",
-                marginBottom: "4px",
-              }}
-            >
-              {order.orderNumber || `#${order.id?.slice(-6).toUpperCase() || "UNKNOWN"}`}
-            </h4>
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-              {order.createdAt
-                ? new Date(order.createdAt).toLocaleTimeString(intlLocale(locale), {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
-                : t("orders.time_unavailable")}
-            </p>
-          </div>
-          <div style={{ fontWeight: "800", color: "var(--accent-primary)" }}>
-            {formatOrderCurrency(order, order.totalAmount || order.total || 0)}
-          </div>
-        </div>
-
-        <div style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-          {t("orders.items_and_payment", {
-            count: order.items?.length || 0,
-            payment: order.paymentMethod || t("orders.payment_cash"),
-          })}
-        </div>
-
-        {order.customerNotes && (
-          <div
-            style={{
-              fontSize: "11px",
-              padding: "6px 8px",
-              backgroundColor: "rgba(234, 179, 8, 0.1)",
-              color: "var(--warning)",
-              borderRadius: "4px",
-              display: "flex",
-              gap: "4px",
-              alignItems: "flex-start",
-            }}
-          >
-            <AlertCircle
-              size={12}
-              style={{ marginTop: "2px", flexShrink: 0 }}
-            />
-            <span
-              style={{
-                display: "-webkit-box",
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-              }}
-            >
-              {order.customerNotes}
-            </span>
-          </div>
-        )}
-
-        <div style={{ marginTop: "4px" }} onClick={(e) => e.stopPropagation()}>
-          {actions}
-        </div>
-      </div>
-    );
-  };
-
-  // Helpers for address handling
-  const getAddressText = (
-    address: OrderAddress | string | null | undefined,
-    isPending = false,
-  ) => {
-    if (!address) return "";
-    if (typeof address === "string") return isPending ? "****" : address;
-    if (isPending) {
-      return `${address.city || t("orders.address_unknown_city")}, ****`;
+  const confirmReject = async (reason: string) => {
+    const order = rejecting;
+    if (!order) return;
+    setActionBusy(true);
+    try {
+      const updated = await OrdersService.rejectOrder(order.id, reason);
+      const patch = { ...(updated ?? {}), status: "rejected" as const, rejectionReason: updated?.rejectionReason ?? reason };
+      patchOrder(order.id, patch);
+      setClosedOrders((current) =>
+        current.some((item) => item.id === order.id) ? current : [{ ...order, ...patch }, ...current],
+      );
+      setRejecting(null);
+      toast.success(t("orders.rejected_success"));
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, t("orders.reject_failed")));
+    } finally {
+      setActionBusy(false);
+      void fetchOrders(false);
     }
-    const parts = [];
-    if (address.building) parts.push(t("orders.address_building", { value: address.building }));
-    if (address.floor) parts.push(t("orders.address_floor", { value: address.floor }));
-    if (address.street) parts.push(address.street);
-    if (address.city) parts.push(address.city);
-    return parts.join(", ") || t("orders.address_on_map");
   };
 
-  const formatName = (name: string, isPending: boolean) => {
-    if (!name) return "";
-    if (isPending) return name.substring(0, 3) + "****";
-    return name;
+  const handleDispatched = (result: DispatchResult) => {
+    const order = dispatching;
+    setDispatching(null);
+    if (result.kind === "driver") {
+      patchOrder(result.order.id, result.order);
+    } else if (order) {
+      editSeqRef.current += 1;
+      const pickup: PickupRequest = {
+        ...result.pickup,
+        order: result.pickup.order ?? {
+          id: order.id,
+          orderNumber: order.orderNumber ?? "",
+          status: order.status,
+        },
+      };
+      setPickupRequests((current) => [pickup, ...current.filter((item) => item.id !== pickup.id)]);
+    }
+    void fetchOrders(false);
   };
 
-  const formatPhone = (phone: string, isPending: boolean) => {
-    if (!phone) return "";
-    if (isPending) return phone.substring(0, 5) + "****";
-    return phone;
-  };
+  const handleTrackedOrderStatus = useCallback(
+    (orderId: string, status: OrderStatus) => patchOrder(orderId, { status }),
+    [patchOrder],
+  );
 
-  const getMapQuery = (address: OrderAddress | string | null | undefined) => {
-    if (!address) return "";
-    if (typeof address === "string") return address;
-    if (address.latitude && address.longitude)
-      return `${address.latitude},${address.longitude}`;
-    return getAddressText(address);
-  };
+  const liveOf = (snapshot: RestaurantOrder | null) =>
+    snapshot
+      ? ordersById.get(snapshot.id) ??
+        closedOrders.find((order) => order.id === snapshot.id) ??
+        snapshot
+      : null;
+  const selectedOrder = liveOf(selected);
+  const trackingOrder = liveOf(tracking);
+  const selectedId = selected?.id ?? null;
+
+  const activeCount =
+    buckets.pending.length + buckets.confirmed.length + buckets.out_for_delivery.length;
 
   return (
-    <div
-      className="animate-fade-in"
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: "24px",
-        height: "calc(100vh - 48px)",
-      }}
-    >
-      <header
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-          flexShrink: 0,
-        }}
-      >
+    <div className={`animate-fade-in ${styles.page}`}>
+      <header className={styles.header}>
         <div>
-          <h1
-            style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
-          >
-            {t("orders.title")}
-          </h1>
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("orders.subtitle")}
-          </p>
+          <h1 className={styles.title}>{t("orders.title")}</h1>
+          <p className={styles.subtitle}>{t("orders.subtitle")}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              fontSize: "14px",
-              fontWeight: "600",
-              padding: "8px 16px",
-              backgroundColor: "var(--bg-elevated)",
-              borderRadius: "8px",
-              border: "1px solid var(--border-color)",
-            }}
-          >
-            <div
-              style={{
-                width: "8px",
-                height: "8px",
-                borderRadius: "50%",
-                backgroundColor: "var(--success)",
-                animation: "pulse 2s infinite",
-              }}
-            />
+        <div className={styles.headerControls}>
+          <div className="segmented" role="group" aria-label={t("ordersx.view_label")}>
+            <button type="button" aria-pressed={view === "active"} onClick={() => switchView("active")}>
+              {t("ordersx.view_active")} ({activeCount})
+              {freshIds.size > 0 && view !== "active" && (
+                <span className={styles.countPill}>{freshIds.size}</span>
+              )}
+            </button>
+            <button type="button" aria-pressed={view === "scheduled"} onClick={() => switchView("scheduled")}>
+              {t("ordersx.view_scheduled")} ({buckets.scheduled.length})
+            </button>
+            <button type="button" aria-pressed={view === "closed"} onClick={() => switchView("closed")}>
+              {t("ordersx.view_closed")}
+            </button>
+          </div>
+          <div className={styles.liveChip}>
+            <span className={`${styles.liveDot} animate-pulse`} aria-hidden />
             {lastSyncedAt
               ? t("orders.updated_at", {
                   time: lastSyncedAt.toLocaleTimeString(intlLocale(locale), {
@@ -535,1312 +468,100 @@ export default function OrdersPage() {
         </div>
       </header>
 
-      {actionError && (
-        <div
-          role="alert"
-          style={{
-            padding: "12px 16px",
-            borderRadius: "10px",
-            color: "var(--error)",
-            background: "rgba(239, 68, 68, 0.08)",
-            border: "1px solid rgba(239, 68, 68, 0.2)",
-          }}
-        >
-          {noticeText(actionError)}
-        </div>
-      )}
-      {actionSuccess && (
-        <div
-          role="status"
-          style={{
-            padding: "12px 16px",
-            borderRadius: "10px",
-            color: "var(--success)",
-            background: "rgba(16, 185, 129, 0.08)",
-            border: "1px solid rgba(16, 185, 129, 0.2)",
-          }}
-        >
-          {noticeText(actionSuccess)}
+      {loadError !== null && (
+        <div className="notice notice-error" role="alert" style={{ alignItems: "center" }}>
+          <span style={{ flex: 1 }}>{loadError || t("orders.load_failed")}</span>
+          <button type="button" className="btn-outline btn-sm" onClick={() => void fetchOrders(false)}>
+            {t("common.retry")}
+          </button>
         </div>
       )}
 
       {loading && orders.length === 0 ? (
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "center",
-            padding: "40px",
-            flex: 1,
-            alignItems: "center",
-          }}
-        >
-          <Loader2
-            className="animate-spin"
-            size={32}
-            color="var(--accent-primary)"
-          />
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", flex: 1, padding: "40px" }}>
+          <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" aria-label={t("common.loading")} />
         </div>
+      ) : view === "active" ? (
+        <OrderBoard
+          buckets={buckets}
+          pickupByOrderId={pickupByOrderId}
+          freshIds={freshIds}
+          selectedId={selectedId}
+          busyPickupId={busyPickupId}
+          fallbackCurrency={fallbackCurrency}
+          onAction={onAction}
+        />
+      ) : view === "scheduled" ? (
+        <OrderList
+          orders={buckets.scheduled}
+          emptyText={t("ordersx.scheduled_empty")}
+          selectedId={selectedId}
+          fallbackCurrency={fallbackCurrency}
+          onAction={onAction}
+        />
       ) : (
-        <>
-          {/* Mobile Tab Navigation */}
-          <div
-            className="mobile-only"
-            style={{
-              display: "none",
-              gap: "8px",
-              overflowX: "auto",
-              width: "100%",
-              paddingBottom: "12px",
-              marginBottom: "8px",
-              borderBottom: "1px solid var(--border-color)",
-              scrollbarWidth: "none",
-            }}
-          >
-            <button
-              onClick={() => setActiveMobileTab("pending")}
-              style={{
-                flexShrink: 0,
-                padding: "8px 16px",
-                borderRadius: "20px",
-                whiteSpace: "nowrap",
-                fontSize: "14px",
-                fontWeight: "600",
-                backgroundColor:
-                  activeMobileTab === "pending"
-                    ? "var(--warning)"
-                    : "var(--bg-elevated)",
-                color:
-                  activeMobileTab === "pending"
-                    ? "white"
-                    : "var(--text-secondary)",
-                border: "none",
-              }}
-            >
-              {statusLabel("pending")} ({pendingOrders.length})
-            </button>
-            <button
-              onClick={() => setActiveMobileTab("confirmed")}
-              style={{
-                flexShrink: 0,
-                padding: "8px 16px",
-                borderRadius: "20px",
-                whiteSpace: "nowrap",
-                fontSize: "14px",
-                fontWeight: "600",
-                backgroundColor:
-                  activeMobileTab === "confirmed"
-                    ? "#3b82f6"
-                    : "var(--bg-elevated)",
-                color:
-                  activeMobileTab === "confirmed"
-                    ? "white"
-                    : "var(--text-secondary)",
-                border: "none",
-              }}
-            >
-              {statusLabel("confirmed")} ({confirmedOrders.length})
-            </button>
-            <button
-              onClick={() => setActiveMobileTab("out_for_delivery")}
-              style={{
-                flexShrink: 0,
-                padding: "8px 16px",
-                borderRadius: "20px",
-                whiteSpace: "nowrap",
-                fontSize: "14px",
-                fontWeight: "600",
-                backgroundColor:
-                  activeMobileTab === "out_for_delivery"
-                    ? "#a855f7"
-                    : "var(--bg-elevated)",
-                color:
-                  activeMobileTab === "out_for_delivery"
-                    ? "white"
-                    : "var(--text-secondary)",
-                border: "none",
-              }}
-            >
-              {statusLabel("out_for_delivery")} ({outForDeliveryOrders.length})
-            </button>
-            <button
-              onClick={() => setActiveMobileTab("delivered")}
-              style={{
-                flexShrink: 0,
-                padding: "8px 16px",
-                borderRadius: "20px",
-                whiteSpace: "nowrap",
-                fontSize: "14px",
-                fontWeight: "600",
-                backgroundColor:
-                  activeMobileTab === "delivered"
-                    ? "var(--success)"
-                    : "var(--bg-elevated)",
-                color:
-                  activeMobileTab === "delivered"
-                    ? "white"
-                    : "var(--text-secondary)",
-                border: "none",
-              }}
-            >
-              {statusLabel("delivered")} ({deliveredOrders.length})
-            </button>
-          </div>
-
-          <div
-            className="kanban-grid"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
-              gap: "16px",
-              flex: 1,
-              overflow: "hidden",
-              paddingBottom: "16px",
-            }}
-          >
-            {/* COLUMN 1: PENDING */}
-            <div
-              className={`kanban-column ${activeMobileTab === "pending" ? "active-mobile-tab" : ""}`}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "16px",
-                backgroundColor: "rgba(0,0,0,0.02)",
-                padding: "16px",
-                borderRadius: "12px",
-                border: "1px solid var(--border-color)",
-                minWidth: 0,
-                minHeight: 0,
-                maxHeight: "100%",
-                transition: "all 0.2s ease",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  borderBottom: "2px solid rgba(234, 179, 8, 0.3)",
-                  paddingBottom: "12px",
-                }}
-              >
-                <h3
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: "700",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  <Clock size={18} color="var(--warning)" />{" "}
-                  {statusLabel("pending")}
-                </h3>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: "800",
-                    backgroundColor: "var(--bg-elevated)",
-                    padding: "2px 8px",
-                    borderRadius: "12px",
-                  }}
-                >
-                  {pendingOrders.length}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                  overflowY: "auto",
-                  flex: 1,
-                  paddingRight: "4px",
-                }}
-              >
-                {pendingOrders.map((order) =>
-                  renderKanbanCard(
-                    order,
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <button
-                        onClick={() => confirmReject(order.id)}
-                        className="btn-outline"
-                        style={{
-                          flex: 1,
-                          padding: "6px",
-                          fontSize: "12px",
-                          color: "var(--error)",
-                          borderColor: "var(--error)",
-                          justifyContent: "center",
-                        }}
-                        disabled={actionLoading !== null}
-                      >
-                        {t("orders.reject")}
-                      </button>
-                      <button
-                        onClick={() => handleAccept(order.id)}
-                        className="btn-primary"
-                        style={{
-                          flex: 1,
-                          padding: "6px",
-                          fontSize: "12px",
-                          background: "var(--success)",
-                          justifyContent: "center",
-                        }}
-                        disabled={actionLoading !== null}
-                      >
-                        {actionLoading === "accept_" + order.id ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          t("orders.accept")
-                        )}
-                      </button>
-                    </div>,
-                  ),
-                )}
-              </div>
-            </div>
-
-            {/* COLUMN 2: CONFIRMED */}
-            <div
-              className={`kanban-column ${activeMobileTab === "confirmed" ? "active-mobile-tab" : ""}`}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "16px",
-                backgroundColor: "rgba(0,0,0,0.02)",
-                padding: "16px",
-                borderRadius: "12px",
-                border: "1px solid var(--border-color)",
-                minWidth: 0,
-                minHeight: 0,
-                maxHeight: "100%",
-                transition: "all 0.2s ease",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  borderBottom: "2px solid rgba(59, 130, 246, 0.3)",
-                  paddingBottom: "12px",
-                }}
-              >
-                <h3
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: "700",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  <CheckCircle2 size={18} color="#3b82f6" />{" "}
-                  {statusLabel("confirmed")}
-                </h3>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: "800",
-                    backgroundColor: "var(--bg-elevated)",
-                    padding: "2px 8px",
-                    borderRadius: "12px",
-                  }}
-                >
-                  {confirmedOrders.length}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                  overflowY: "auto",
-                  flex: 1,
-                  paddingRight: "4px",
-                }}
-              >
-                {confirmedOrders.map((order) => {
-                  const pickupRequest = activePickupForOrder(order.id);
-                  return renderKanbanCard(
-                    order,
-                    pickupRequest ? (
-                      <div
-                        style={{
-                          padding: "7px 10px",
-                          borderRadius: "7px",
-                          textAlign: "center",
-                          color: "#3b82f6",
-                          background: "rgba(59, 130, 246, 0.1)",
-                          fontSize: "12px",
-                          fontWeight: 700,
-                        }}
-                      >
-                        {pickupRequest.status === "driver_assigned"
-                          ? t("orders.partner_driver_assigned")
-                          : pickupRequest.status === "accepted"
-                            ? t("orders.pickup_accepted")
-                            : t("orders.waiting_for_partner")}
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => void openDispatchModal(order)}
-                        className="btn-primary"
-                        style={{
-                          width: "100%",
-                          padding: "6px",
-                          fontSize: "12px",
-                          backgroundColor: "#3b82f6",
-                          justifyContent: "center",
-                        }}
-                        disabled={actionLoading !== null}
-                      >
-                        {t("orders.dispatch")}
-                      </button>
-                    ),
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* COLUMN 3: OUT FOR DELIVERY */}
-            <div
-              className={`kanban-column ${activeMobileTab === "out_for_delivery" ? "active-mobile-tab" : ""}`}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "16px",
-                backgroundColor: "rgba(0,0,0,0.02)",
-                padding: "16px",
-                borderRadius: "12px",
-                border: "1px solid var(--border-color)",
-                minWidth: 0,
-                minHeight: 0,
-                maxHeight: "100%",
-                transition: "all 0.2s ease",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  borderBottom: "2px solid rgba(168, 85, 247, 0.3)",
-                  paddingBottom: "12px",
-                }}
-              >
-                <h3
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: "700",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  <Truck size={18} color="#a855f7" />{" "}
-                  {statusLabel("out_for_delivery")}
-                </h3>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: "800",
-                    backgroundColor: "var(--bg-elevated)",
-                    padding: "2px 8px",
-                    borderRadius: "12px",
-                  }}
-                >
-                  {outForDeliveryOrders.length}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                  overflowY: "auto",
-                  flex: 1,
-                  paddingRight: "4px",
-                }}
-              >
-                {outForDeliveryOrders.map((order) =>
-                  renderKanbanCard(
-                    order,
-                    <button
-                      type="button"
-                      onClick={() => setTrackingOrder(order)}
-                      style={{
-                        width: "100%",
-                        padding: "7px 10px",
-                        fontSize: "12px",
-                        color: "#a855f7",
-                        backgroundColor: "rgba(168, 85, 247, 0.1)",
-                        border: "1px solid rgba(168, 85, 247, 0.25)",
-                        borderRadius: "7px",
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: "6px",
-                      }}
-                    >
-                      <Navigation size={14} /> {t("orders.track_driver")}
-                    </button>,
-                  ),
-                )}
-              </div>
-            </div>
-
-            {/* COLUMN 4: DELIVERED */}
-            <div
-              className={`kanban-column ${activeMobileTab === "delivered" ? "active-mobile-tab" : ""}`}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                gap: "16px",
-                backgroundColor: "rgba(0,0,0,0.02)",
-                padding: "16px",
-                borderRadius: "12px",
-                border: "1px solid var(--border-color)",
-                minWidth: 0,
-                minHeight: 0,
-                maxHeight: "100%",
-                transition: "all 0.2s ease",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  borderBottom: "2px solid rgba(16, 185, 129, 0.3)",
-                  paddingBottom: "12px",
-                }}
-              >
-                <h3
-                  style={{
-                    fontSize: "16px",
-                    fontWeight: "700",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    color: "var(--text-primary)",
-                  }}
-                >
-                  <PackageCheck size={18} color="var(--success)" />{" "}
-                  {statusLabel("delivered")}
-                </h3>
-                <span
-                  style={{
-                    fontSize: "12px",
-                    fontWeight: "800",
-                    backgroundColor: "var(--bg-elevated)",
-                    padding: "2px 8px",
-                    borderRadius: "12px",
-                  }}
-                >
-                  {deliveredOrders.length}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                  overflowY: "auto",
-                  flex: 1,
-                  paddingRight: "4px",
-                  opacity: 0.7,
-                }}
-              >
-                {deliveredOrders.map((order) =>
-                  renderKanbanCard(
-                    order,
-                    <div
-                      style={{
-                        fontSize: "12px",
-                        color: "var(--success)",
-                        fontWeight: "600",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "4px",
-                        justifyContent: "center",
-                        padding: "6px",
-                        backgroundColor: "rgba(16, 185, 129, 0.1)",
-                        borderRadius: "6px",
-                      }}
-                    >
-                      <CheckCircle2 size={14} /> {t("orders.completed")}
-                    </div>,
-                  ),
-                )}
-              </div>
-            </div>
-          </div>
-        </>
+        <OrderList
+          orders={closedOrders}
+          loading={closedLoading}
+          error={closedError === null ? null : closedError || t("ordersx.closed_load_failed")}
+          hint={t("ordersx.closed_hint")}
+          emptyText={t("ordersx.closed_empty")}
+          onRefresh={() => void loadClosed()}
+          selectedId={selectedId}
+          fallbackCurrency={fallbackCurrency}
+          onAction={onAction}
+        />
       )}
 
-      {/* Order Details Modal Overlay */}
       {selectedOrder && (
-        <div
-          className="modal-overlay-mobile"
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0,0,0,0.6)",
-            zIndex: 60,
-            display: "flex",
-            justifyContent: "flex-end",
-          }}
-          onClick={() => setSelectedOrder(null)}
-        >
-          <div
-            className="mobile-full-width"
-            style={{
-              width: "100%",
-              maxWidth: "450px",
-              height: "100%",
-              borderRadius: "0",
-              backgroundColor: "var(--bg-base)",
-              borderInlineStart: "1px solid var(--border-color)",
-              display: "flex",
-              flexDirection: "column",
-              animation: "slideInRight 0.3s ease",
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              style={{
-                padding: "24px",
-                borderBottom: "1px solid var(--border-color)",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                flexShrink: 0,
-                backgroundColor: "var(--bg-surface)",
-              }}
-            >
-              <div>
-                <h3
-                  style={{
-                    fontSize: "24px",
-                    fontWeight: "800",
-                    marginBottom: "4px",
-                  }}
-                >
-                  {t("orders.detail_title", {
-                    code: selectedOrder.id?.slice(-6).toUpperCase() ?? "",
-                  })}
-                </h3>
-                <p style={{ color: "var(--text-secondary)", fontSize: "14px" }}>
-                  {selectedOrder.createdAt
-                    ? new Date(selectedOrder.createdAt).toLocaleString(intlLocale(locale))
-                    : t("orders.time_unavailable")}
-                </p>
-                <span
-                  style={{
-                    display: "inline-block",
-                    marginTop: "8px",
-                    fontSize: "12px",
-                    padding: "4px 10px",
-                    borderRadius: "12px",
-                    fontWeight: "700",
-                    backgroundColor:
-                      ORDER_STATUS_STYLES[selectedOrder.status].backgroundColor,
-                    color: ORDER_STATUS_STYLES[selectedOrder.status].color,
-                  }}
-                >
-                  {statusLabel(selectedOrder.status)}
-                </span>
-                {selectedOrder.status === "out_for_delivery" && (
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    onClick={() => setTrackingOrder(selectedOrder)}
-                    style={{ marginTop: "12px", padding: "7px 11px", fontSize: "12px" }}
-                  >
-                    <Navigation size={14} /> {t("orders.track_driver")}
-                  </button>
-                )}
-              </div>
-              <button
-                onClick={() => setSelectedOrder(null)}
-                style={{
-                  background: "var(--bg-elevated)",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "var(--text-primary)",
-                  width: "36px",
-                  height: "36px",
-                  borderRadius: "50%",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <X size={20} />
-              </button>
-            </div>
+        <OrderDetailModal
+          order={selectedOrder}
+          pickup={pickupByOrderId.get(selectedOrder.id)}
+          busyPickup={
+            busyPickupId !== null && pickupByOrderId.get(selectedOrder.id)?.id === busyPickupId
+          }
+          fallbackCurrency={fallbackCurrency}
+          onAction={onAction}
+          onClose={() => setSelected(null)}
+        />
+      )}
 
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-                padding: "24px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "24px",
-              }}
-            >
-              {selectedOrder.deliveryAddress && (
-                <div
-                  style={{
-                    width: "100%",
-                    height: "200px",
-                    borderRadius: "12px",
-                    overflow: "hidden",
-                    border: "1px solid var(--border-color)",
-                    flexShrink: 0,
-                    position: "relative",
-                  }}
-                >
-                  <iframe
-                    width="100%"
-                    height="100%"
-                    frameBorder="0"
-                    scrolling="no"
-                    marginHeight={0}
-                    marginWidth={0}
-                    style={{
-                      filter: selectedOrder.status === "pending" ? "blur(5px)" : "none",
-                      pointerEvents: selectedOrder.status === "pending" ? "none" : "auto",
-                      transition: "filter 0.3s ease",
-                    }}
-                    src={`https://maps.google.com/maps?q=${encodeURIComponent(getMapQuery(selectedOrder.deliveryAddress))}&t=&z=15&ie=UTF8&iwloc=&output=embed`}
-                  />
-                  {selectedOrder.status === "pending" && (
-                    <div
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        backgroundColor: "rgba(0, 0, 0, 0.4)",
-                        color: "white",
-                        fontWeight: "600",
-                        fontSize: "14px",
-                        zIndex: 10,
-                      }}
-                    >
-                      {t("orders.map_locked")}
-                    </div>
-                  )}
-                </div>
-              )}
+      {accepting && (
+        <AcceptOrderModal
+          key={accepting.id}
+          order={accepting}
+          busy={actionBusy}
+          onConfirm={(minutes) => void confirmAccept(minutes)}
+          onClose={() => setAccepting(null)}
+        />
+      )}
 
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "16px",
-                  backgroundColor: "var(--bg-elevated)",
-                  padding: "16px",
-                  borderRadius: "12px",
-                }}
-              >
-                <div>
-                  <p
-                    style={{
-                      fontSize: "12px",
-                      color: "var(--text-secondary)",
-                      marginBottom: "4px",
-                      textTransform: "uppercase",
-                      fontWeight: "700",
-                    }}
-                  >
-                    {t("orders.payment")}
-                  </p>
-                  <p style={{ fontSize: "14px", fontWeight: "600" }}>
-                    {selectedOrder.paymentMethod}
-                  </p>
-                </div>
-                <div>
-                  <p
-                    style={{
-                      fontSize: "12px",
-                      color: "var(--text-secondary)",
-                      marginBottom: "4px",
-                      textTransform: "uppercase",
-                      fontWeight: "700",
-                    }}
-                  >
-                    {t("orders.payment_status")}
-                  </p>
-                  <p
-                    style={{
-                      fontSize: "14px",
-                      fontWeight: "600",
-                      color:
-                        selectedOrder.paymentStatus === "paid"
-                          ? "var(--success)"
-                          : "var(--warning)",
-                    }}
-                  >
-                    {selectedOrder.paymentStatus}
-                  </p>
-                </div>
-                {(selectedOrder.customerName || selectedOrder.customer?.user?.fullName) && (
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <p
-                      style={{
-                        fontSize: "12px",
-                        color: "var(--text-secondary)",
-                        marginBottom: "4px",
-                        textTransform: "uppercase",
-                        fontWeight: "700",
-                      }}
-                    >
-                      {t("orders.customer")}
-                    </p>
-                    <p style={{ fontSize: "14px", fontWeight: "600", display: "flex", alignItems: "center", gap: "4px" }}>
-                      <span>
-                        {formatName(selectedOrder.customerName || selectedOrder.customer?.user?.fullName || "", selectedOrder.status === "pending")}
-                      </span>
-                      {" "}
-                      {(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber) && (
-                        <>
-                          <span>•</span>
-                          <span className="force-ltr">
-                            {formatPhone(selectedOrder.customerPhone || selectedOrder.customer?.user?.phoneNumber || "", selectedOrder.status === "pending")}
-                          </span>
-                        </>
-                      )}
-                    </p>
-                  </div>
-                )}
-                {selectedOrder.deliveryAddress && (
-                  <div style={{ gridColumn: "1 / -1" }}>
-                    <p
-                      style={{
-                        fontSize: "12px",
-                        color: "var(--text-secondary)",
-                        marginBottom: "4px",
-                        textTransform: "uppercase",
-                        fontWeight: "700",
-                      }}
-                    >
-                      {t("orders.delivery_address")}
-                    </p>
-                    <p
-                      style={{
-                        fontSize: "14px",
-                        fontWeight: "500",
-                        lineHeight: 1.4,
-                        display: "inline-block",
-                      }}
-                    >
-                      {getAddressText(selectedOrder.deliveryAddress, selectedOrder.status === "pending")}
-                    </p>
-                  </div>
-                )}
-              </div>
+      {rejecting && (
+        <RejectOrderModal
+          key={rejecting.id}
+          order={rejecting}
+          busy={actionBusy}
+          onConfirm={(reason) => void confirmReject(reason)}
+          onClose={() => setRejecting(null)}
+        />
+      )}
 
-              {selectedOrder.customerNotes && (
-                <div
-                  style={{
-                    padding: "16px",
-                    backgroundColor: "rgba(234, 179, 8, 0.1)",
-                    borderRadius: "12px",
-                    border: "1px solid rgba(234, 179, 8, 0.2)",
-                  }}
-                >
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      color: "var(--warning)",
-                      fontWeight: "700",
-                      marginBottom: "8px",
-                    }}
-                  >
-                    <AlertCircle size={18} />
-                    {t("orders.customer_note")}
-                  </div>
-                  <p
-                    style={{
-                      fontSize: "14px",
-                      color: "var(--text-primary)",
-                      lineHeight: "1.5",
-                    }}
-                  >
-                    {selectedOrder.customerNotes}
-                  </p>
-                </div>
-              )}
-
-              <div>
-                <h4
-                  style={{
-                    fontWeight: "800",
-                    fontSize: "16px",
-                    color: "var(--text-primary)",
-                    marginBottom: "16px",
-                    borderBottom: "2px solid var(--border-color)",
-                    paddingBottom: "8px",
-                  }}
-                >
-                  {t("orders.items")}
-                </h4>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "16px",
-                  }}
-                >
-                  {(selectedOrder.items || []).map((item, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        display: "flex",
-                        gap: "16px",
-                        paddingBottom: "16px",
-                        borderBottom: "1px dashed var(--border-color)",
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: "32px",
-                          height: "32px",
-                          backgroundColor: "var(--bg-elevated)",
-                          borderRadius: "8px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          fontWeight: "700",
-                          color: "var(--accent-primary)",
-                          flexShrink: 0,
-                        }}
-                      >
-                        {item.quantity}x
-                      </div>
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          flex: 1,
-                          gap: "4px",
-                        }}
-                      >
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "flex-start",
-                          }}
-                        >
-                          <span style={{ fontWeight: "600", fontSize: "15px" }}>
-                            {item.menuItem?.name || item.name || t("orders.item_fallback")}
-                          </span>
-                          <span style={{ fontWeight: "700" }}>
-                            {formatOrderCurrency(
-                              selectedOrder,
-                              item.subtotal || item.unitPrice || item.price || 0,
-                            )}
-                          </span>
-                        </div>
-                        {item.selectedOptions &&
-                          Object.entries(item.selectedOptions).map(
-                            ([key, val]) => (
-                              <div
-                                key={key}
-                                style={{
-                                  fontSize: "13px",
-                                  color: "var(--text-secondary)",
-                                  display: "flex",
-                                  alignItems: "flex-start",
-                                  gap: "8px",
-                                  marginTop: "4px",
-                                }}
-                              >
-                                <span
-                                  style={{
-                                    width: "4px",
-                                    height: "4px",
-                                    borderRadius: "50%",
-                                    backgroundColor: "var(--border-color)",
-                                    marginTop: "7px",
-                                  }}
-                                />
-                                {Array.isArray(val) ? val.join(", ") : String(val)}
-                              </div>
-                            ),
-                          )}
-                        {item.notes && (
-                          <div
-                            style={{
-                              fontSize: "13px",
-                              color: "var(--warning)",
-                              marginTop: "8px",
-                              padding: "8px",
-                              backgroundColor: "rgba(234, 179, 8, 0.05)",
-                              borderRadius: "6px",
-                            }}
-                          >
-                            <strong>{t("orders.item_note")}</strong> {item.notes}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                padding: "24px",
-                backgroundColor: "var(--bg-elevated)",
-                borderTop: "1px solid var(--border-color)",
-                flexShrink: 0,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "16px",
-                  color: "var(--text-secondary)",
-                }}
-              >
-                <span>{t("orders.subtotal")}</span>
-                <span>
-                  {formatOrderCurrency(
-                    selectedOrder,
-                    selectedOrder.subtotal || selectedOrder.totalAmount || selectedOrder.total || 0,
-                  )}
-                </span>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  fontWeight: "800",
-                  fontSize: "24px",
-                  color: "var(--accent-primary)",
-                }}
-              >
-                <span>{t("orders.total")}</span>
-                <span>
-                  {formatOrderCurrency(
-                    selectedOrder,
-                    selectedOrder.totalAmount || selectedOrder.total || 0,
-                  )}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
+      {dispatching && (
+        <DispatchModal
+          key={dispatching.id}
+          order={dispatching}
+          onClose={() => setDispatching(null)}
+          onDispatched={handleDispatched}
+        />
       )}
 
       {trackingOrder && (
         <DriverTrackingModal
           order={trackingOrder}
-          onClose={() => setTrackingOrder(null)}
+          onClose={() => setTracking(null)}
           onOrderStatus={handleTrackedOrderStatus}
         />
       )}
-
-      {dispatchOrder && (
-        <div
-          role="presentation"
-          style={{
-            position: "fixed",
-            inset: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.6)",
-            zIndex: 90,
-            display: "grid",
-            placeItems: "center",
-            padding: "20px",
-          }}
-          onClick={() => setDispatchOrder(null)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="dispatch-order-title"
-            className="glass-panel"
-            style={{ width: "100%", maxWidth: "560px", padding: "24px" }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                gap: "16px",
-                marginBottom: "20px",
-              }}
-            >
-              <div>
-                <p style={{ margin: "0 0 4px", color: "var(--text-muted)", fontSize: "12px" }}>
-                  {dispatchOrder.orderNumber ||
-                    t("dispatch.order_fallback", {
-                      code: dispatchOrder.id?.slice(-6).toUpperCase() ?? "",
-                    })}
-                </p>
-                <h3 id="dispatch-order-title" style={{ margin: 0, fontSize: "22px" }}>
-                  {t("dispatch.title")}
-                </h3>
-              </div>
-              <button
-                type="button"
-                aria-label={t("dispatch.close")}
-                onClick={() => setDispatchOrder(null)}
-                style={{ border: 0, background: "transparent", color: "var(--text-secondary)", cursor: "pointer" }}
-              >
-                <X size={22} />
-              </button>
-            </div>
-
-            {actionError && (
-              <div
-                role="alert"
-                style={{
-                  marginBottom: "16px",
-                  padding: "12px",
-                  borderRadius: "10px",
-                  color: "var(--error)",
-                  background: "rgba(239, 68, 68, 0.08)",
-                }}
-              >
-                {noticeText(actionError)}
-              </div>
-            )}
-
-            {loadingDispatchOptions ? (
-              <div style={{ minHeight: "180px", display: "grid", placeItems: "center" }}>
-                <Loader2 className="animate-spin" size={28} color="var(--accent-primary)" />
-              </div>
-            ) : (
-              <div style={{ display: "grid", gap: "16px" }}>
-                <section
-                  style={{
-                    padding: "18px",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "14px",
-                    background: "var(--bg-surface)",
-                  }}
-                >
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
-                    <UserRound size={20} color="var(--accent-primary)" />
-                    <div>
-                      <strong>{t("dispatch.own_driver")}</strong>
-                      <p style={{ margin: "2px 0 0", color: "var(--text-muted)", fontSize: "12px" }}>
-                        {t("dispatch.own_driver_hint")}
-                      </p>
-                    </div>
-                  </div>
-                  {drivers.length > 0 ? (
-                    <div style={{ display: "flex", gap: "10px", alignItems: "stretch" }} className="flex-col-mobile">
-                      <select
-                        className="form-input"
-                        aria-label={t("dispatch.driver_select_label")}
-                        value={selectedDriverId}
-                        onChange={(event) => setSelectedDriverId(event.target.value)}
-                        style={{ flex: 1 }}
-                      >
-                        <option value="">{t("dispatch.driver_select_placeholder")}</option>
-                        {drivers.map((driver) => (
-                          <option key={driver.id} value={driver.id} disabled={!driver.isAvailable}>
-                            {driver.fullName || driver.phoneNumber}
-                            {driver.isAvailable ? "" : t("dispatch.driver_off_shift")}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        type="button"
-                        className="btn-primary"
-                        disabled={!selectedDriverId || actionLoading !== null}
-                        onClick={() => void handleOwnDriverDispatch()}
-                      >
-                        {actionLoading === `dispatch_driver_${dispatchOrder.id}` && (
-                          <Loader2 className="animate-spin" size={17} />
-                        )}
-                        {t("dispatch.assign_and_send")}
-                      </button>
-                    </div>
-                  ) : (
-                    <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "13px" }}>
-                      {t("dispatch.no_drivers")}
-                    </p>
-                  )}
-                </section>
-
-                <section
-                  style={{
-                    padding: "18px",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "14px",
-                    background: "var(--bg-surface)",
-                  }}
-                >
-                  <div style={{ display: "flex", gap: "10px", alignItems: "center", marginBottom: "12px" }}>
-                    <Building2 size={20} color="#3b82f6" />
-                    <div>
-                      <strong>{t("dispatch.partner")}</strong>
-                      <p style={{ margin: "2px 0 0", color: "var(--text-muted)", fontSize: "12px" }}>
-                        {t("dispatch.partner_hint")}
-                      </p>
-                    </div>
-                  </div>
-                  {deliveryIntegration?.status === "accepted" && deliveryIntegration.company ? (
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ width: "100%", justifyContent: "center" }}
-                      disabled={actionLoading !== null}
-                      onClick={() => void handlePartnerDispatch()}
-                    >
-                      {actionLoading === `dispatch_partner_${dispatchOrder.id}` && (
-                        <Loader2 className="animate-spin" size={17} />
-                      )}
-                      {t("dispatch.request_pickup", {
-                        company: deliveryIntegration.company.name,
-                      })}
-                    </button>
-                  ) : (
-                    <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "13px" }}>
-                      {deliveryIntegration?.status === "pending"
-                        ? t("dispatch.partner_pending")
-                        : t("dispatch.partner_none")}
-                    </p>
-                  )}
-                </section>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Reject Modal */}
-      {isRejectModalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 0.5)",
-            zIndex: 100,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <div
-            className="glass-panel"
-            style={{
-              width: "100%",
-              maxWidth: "400px",
-              padding: "24px",
-              animation: "scaleIn 0.2s ease",
-            }}
-          >
-            <h3
-              style={{
-                fontSize: "20px",
-                fontWeight: "700",
-                marginBottom: "16px",
-              }}
-            >
-              {t("reject.title")}
-            </h3>
-            <p
-              style={{
-                color: "var(--text-secondary)",
-                marginBottom: "16px",
-                fontSize: "14px",
-              }}
-            >
-              {t("reject.body")}
-            </p>
-            <textarea
-              className="form-input"
-              rows={4}
-              placeholder={t("reject.placeholder")}
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              style={{ marginBottom: "24px" }}
-            />
-            <div style={{ display: "flex", gap: "12px" }}>
-              <button
-                className="btn-outline"
-                style={{ flex: 1, justifyContent: "center" }}
-                onClick={() => setIsRejectModalOpen(false)}
-                disabled={actionLoading !== null}
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                className="btn-primary"
-                style={{
-                  flex: 1,
-                  justifyContent: "center",
-                  background: "var(--error)",
-                  border: "none",
-                }}
-                onClick={handleReject}
-                disabled={!rejectReason.trim() || actionLoading !== null}
-              >
-                {actionLoading === "reject_" + orderToReject ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : null}{" "}
-                {t("reject.confirm")}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <style
-        dangerouslySetInnerHTML={{
-          __html: `
-        @keyframes slideInRight {
-          from { transform: translateX(100%); }
-          to { transform: translateX(0); }
-        }
-        /* The drawer docks to the end edge, which is the left in Arabic, so
-           the entrance has to come from the other side. */
-        [dir="rtl"] .mobile-full-width {
-          animation-name: slideInLeft !important;
-        }
-        @keyframes slideInLeft {
-          from { transform: translateX(-100%); }
-          to { transform: translateX(0); }
-        }
-        @keyframes scaleIn {
-          from { transform: scale(0.95); opacity: 0; }
-          to { transform: scale(1); opacity: 1; }
-        }
-      `,
-        }}
-      />
     </div>
   );
 }

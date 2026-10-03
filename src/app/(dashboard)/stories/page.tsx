@@ -1,269 +1,299 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import { Loader2, Plus, Edit2, Trash2, Eye } from "lucide-react";
-import { StoriesService } from "@/services/api/stories";
-import { SettingsService } from "@/services/api/settings";
-import StoryModal from "./components/StoryModal";
+import { useEffect, useRef, useState } from "react";
+import { ChevronLeft, ChevronRight, CircleDashed, Loader2, Plus, RefreshCw } from "lucide-react";
+import { StoriesService, type Story } from "@/services/api/stories";
+import { getApiErrorMessage, isApiNotFound } from "@/services/api/errors";
+import { useRestaurant } from "@/lib/restaurantContext";
+import { useFeedback } from "@/components/ui/Feedback";
 import { useI18n } from "@/lib/i18n";
+import SortHandle, { beginRowDrag, moveInArray } from "@/components/menu/SortHandle";
+import styles from "@/components/media/media.module.css";
+import StoryModal from "./components/StoryModal";
+import StoryCard from "./components/StoryCard";
+import StoryViewersModal from "./components/StoryViewersModal";
+
+/** Server order when the API reports one; otherwise the listing's own order (the sort is stable). */
+const bySortOrder = (list: Story[]) =>
+  list.every((s) => typeof s.sortOrder === "number")
+    ? list.slice().sort((a, b) => (a.sortOrder as number) - (b.sortOrder as number))
+    : list;
+
+type LoadState = { status: "loading" } | { status: "ready" } | { status: "error"; message: string };
 
 export default function StoriesPage() {
   const { t } = useI18n();
-  const [stories, setStories] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingStory, setEditingStory] = useState<any>(null);
-  const [restaurantId, setRestaurantId] = useState<string | null>(null);
+  const { toast, confirm } = useFeedback();
+  // The shell has already fetched the profile; only its id is needed here.
+  const restaurantId = useRestaurant().restaurant?.id;
+
+  const [stories, setStories] = useState<Story[]>([]);
+  const [load, setLoad] = useState<LoadState>({ status: "loading" });
+  const [reloadKey, setReloadKey] = useState(0);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // `undefined` = editor closed, `null` = creating.
+  const [editing, setEditing] = useState<Story | null | undefined>(undefined);
+  const [viewersFor, setViewersFor] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchStories();
-  }, []);
+    if (!restaurantId) return;
+    let cancelled = false;
+    StoriesService.getOwnStories(restaurantId)
+      .then((data) => {
+        if (cancelled) return;
+        setStories(bySortOrder(data));
+        setLoad({ status: "ready" });
+      })
+      .catch((err: unknown) => {
+        console.error("Failed to fetch stories", err);
+        // Fallback copy is resolved at render, so `t` stays out of the deps.
+        if (!cancelled) setLoad({ status: "error", message: getApiErrorMessage(err, "") });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [restaurantId, reloadKey]);
 
-  const fetchStories = async () => {
-    setLoading(true);
+  const retry = () => {
+    setLoad({ status: "loading" });
+    setReloadKey((n) => n + 1);
+  };
+
+  const handleDelete = async (story: Story) => {
+    const ok = await confirm({
+      title: t("media.delete_story_title"),
+      message: t("stories.confirm_delete"),
+      danger: true,
+    });
+    if (!ok) return;
+    setDeletingId(story.id);
     try {
-      // First get the restaurant profile to get the ID
-      const profile = await SettingsService.getOwnRestaurant();
-      if (profile?.id) {
-        setRestaurantId(profile.id);
-        const data = await StoriesService.getOwnStories(profile.id);
-        setStories(data);
-      }
+      await StoriesService.deleteStory(story.id);
+      setStories((current) => current.filter((s) => s.id !== story.id));
+      toast.success(t("media.story_deleted"));
     } catch (err) {
-      console.error("Failed to fetch stories", err);
+      console.error("Failed to delete story", err);
+      toast.error(getApiErrorMessage(err, t("media.delete_failed")));
     } finally {
-      setLoading(false);
+      setDeletingId(null);
     }
   };
 
-  const handleDelete = async (storyId: string) => {
-    if (confirm(t("stories.confirm_delete"))) {
-      try {
-        await StoriesService.deleteStory(storyId);
-        fetchStories();
-      } catch (err) {
-        console.error("Failed to delete story", err);
-      }
-    }
+  const openCreate = () => setEditing(null);
+
+  // ─── Reordering ─────────────────────────────────────────────────────────
+  //
+  // Same pattern as the menu page: the drag source lives in a ref because a
+  // state update made in `dragstart` may not have rendered before the first
+  // `dragover`; the state copy only paints the highlighting. One save at a
+  // time, so two quick moves can't land on the server out of order.
+  const draggingRef = useRef<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  // Set once the API answers 404 — the route isn't deployed, so stop offering it.
+  const [reorderUnsupported, setReorderUnsupported] = useState(false);
+
+  const canSort = stories.length > 1 && !reordering && !reorderUnsupported && deletingId === null;
+  const sortBlockedHint = reorderUnsupported
+    ? t("media.story_reorder_unavailable")
+    : reordering
+      ? t("media.story_reorder_saving")
+      : undefined;
+
+  const clearDrag = () => {
+    draggingRef.current = null;
+    setDraggingId(null);
+    setDropTargetId(null);
   };
 
-  const viewCounts = async (storyId: string) => {
+  const moveStory = async (storyId: string, toIndex: number) => {
+    if (!canSort) return;
+    const from = stories.findIndex((s) => s.id === storyId);
+    if (from < 0 || toIndex < 0 || toIndex >= stories.length || from === toIndex) return;
+    const previous = stories;
+    const next = moveInArray(stories, from, toIndex);
+    setStories(next);
+    setReordering(true);
     try {
-      const data = await StoriesService.getStoryViewers(storyId);
-      alert(t("stories.view_count", { count: data.count || 0 }));
-    } catch (err) {
-      console.error("Failed to fetch viewers", err);
-      alert(t("stories.view_count_failed"));
+      await StoriesService.reorderStories(next.map((s) => s.id));
+    } catch (err: unknown) {
+      console.error("Failed to reorder stories", err);
+      setStories(previous); // the server still has the old order
+      if (isApiNotFound(err)) {
+        setReorderUnsupported(true);
+        toast.error(t("media.story_reorder_unavailable"));
+      } else {
+        toast.error(getApiErrorMessage(err, t("media.story_reorder_failed")));
+      }
+    } finally {
+      setReordering(false);
     }
   };
 
-  const isVideoUrl = (url: string) => {
-    if (!url) return false;
-    const lower = url.toLowerCase();
-    return (
-      lower.endsWith(".mp4") ||
-      lower.endsWith(".mov") ||
-      lower.includes("/video/upload/")
-    );
+  const handleDrop = (targetId: string) => {
+    const source = draggingRef.current;
+    clearDrag();
+    if (!source || source === targetId) return;
+    void moveStory(source, stories.findIndex((s) => s.id === targetId));
   };
 
   return (
-    <div
-      className="animate-fade-in"
-      style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-    >
-      <header
-        className="responsive-header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "flex-start",
-        }}
-      >
+    <div className="animate-fade-in">
+      <header className="page-header">
         <div>
-          <h1
-            style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
-          >
-            {t("stories.title")}
-          </h1>
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("stories.subtitle")}
-          </p>
+          <h1 className="page-title">{t("stories.title")}</h1>
+          <p className="page-subtitle">{t("stories.subtitle")}</p>
         </div>
-        <button
-          className="btn-primary"
-          onClick={() => {
-            setEditingStory(null);
-            setIsModalOpen(true);
-          }}
-        >
+        <button type="button" className="btn-primary" onClick={openCreate}>
           <Plus size={20} /> {t("stories.create")}
         </button>
       </header>
 
-      {loading ? (
-        <div
-          style={{ display: "flex", justifyContent: "center", padding: "40px" }}
-        >
-          <Loader2
-            className="animate-spin"
-            size={32}
-            color="var(--accent-primary)"
-          />
-        </div>
-      ) : stories.length === 0 ? (
-        <div
-          className="glass-panel"
-          style={{ padding: "40px", textAlign: "center" }}
-        >
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("stories.empty")}
-          </p>
-        </div>
-      ) : (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-            gap: "24px",
-          }}
-        >
-          {stories.map((story) => (
-            <div
-              key={story.id}
-              className="glass-panel"
-              style={{
-                overflow: "hidden",
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <div
-                style={{
-                  height: "350px",
-                  backgroundColor: "var(--bg-elevated)",
-                  position: "relative",
-                }}
-              >
-                {isVideoUrl(story.imageUrl) ? (
-                  <video
-                    src={story.imageUrl}
-                    autoPlay
-                    loop
-                    muted
-                    playsInline
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                    }}
-                  />
-                ) : (
-                  <img
-                    src={story.imageUrl}
-                    alt={story.caption || t("stories.title")}
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      objectFit: "cover",
-                    }}
-                  />
-                )}
-                <div
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    insetInline: 0,
-                    background: "linear-gradient(rgba(0,0,0,0.5), transparent)",
-                    padding: "16px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                  }}
-                >
-                  <span
-                    style={{
-                      color: "white",
-                      fontSize: "12px",
-                      fontWeight: "600",
-                    }}
-                  >
-                    {t("stories.active")}
-                  </span>
-                  <button
-                    onClick={() => viewCounts(story.id)}
-                    style={{
-                      background: "rgba(0,0,0,0.4)",
-                      border: "none",
-                      borderRadius: "4px",
-                      padding: "4px 8px",
-                      color: "white",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <Eye size={14} /> {t("stories.views")}
-                  </button>
-                </div>
-              </div>
-              <div
-                style={{
-                  padding: "16px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
-                }}
-              >
-                <p
-                  style={{
-                    fontSize: "14px",
-                    color: "var(--text-secondary)",
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                    overflow: "hidden",
-                    minHeight: "40px",
-                  }}
-                >
-                  {story.caption || t("stories.no_caption")}
-                </p>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <button
-                    onClick={() => {
-                      setEditingStory(story);
-                      setIsModalOpen(true);
-                    }}
-                    className="btn-outline"
-                    style={{ flex: 1, justifyContent: "center" }}
-                  >
-                    <Edit2 size={16} /> {t("common.edit")}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(story.id)}
-                    aria-label={t("common.delete")}
-                    className="btn-outline"
-                    style={{
-                      padding: "8px 12px",
-                      color: "var(--error)",
-                      borderColor: "var(--error)",
-                    }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-            </div>
+      {load.status === "loading" ? (
+        <div className={styles.grid} aria-busy="true" aria-label={t("common.loading")}>
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="skeleton" style={{ aspectRatio: "9 / 16", borderRadius: "var(--radius-lg)" }} />
           ))}
         </div>
+      ) : load.status === "error" ? (
+        <div className="empty-state" role="alert">
+          <h3>{load.message || t("media.load_stories_failed")}</h3>
+          <button type="button" className="btn-outline" onClick={retry}>
+            <RefreshCw size={18} /> {t("common.retry")}
+          </button>
+        </div>
+      ) : stories.length === 0 ? (
+        <div className="empty-state">
+          <CircleDashed size={40} color="var(--accent-primary)" aria-hidden="true" />
+          <h3>{t("media.stories_empty_title")}</h3>
+          <p>{t("stories.empty")}</p>
+          <button type="button" className="btn-primary" onClick={openCreate} style={{ marginTop: "6px" }}>
+            <Plus size={18} /> {t("stories.create")}
+          </button>
+        </div>
+      ) : (
+        <>
+          {stories.length > 1 && (
+            <p
+              className="field-hint"
+              role="status"
+              style={{ marginBottom: "12px", display: "flex", alignItems: "center", gap: "6px" }}
+            >
+              {reordering && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
+              {reordering
+                ? t("media.story_reorder_saving")
+                : reorderUnsupported
+                  ? t("media.story_reorder_unavailable")
+                  : t("media.story_reorder_hint")}
+            </p>
+          )}
+          <div className={styles.grid}>
+            {stories.map((story, index) => {
+              const position = index + 1;
+              const isDragged = draggingId === story.id;
+              const isTarget = dropTargetId === story.id && draggingId !== null && draggingId !== story.id;
+              return (
+                <div
+                  key={story.id}
+                  data-drag-card
+                  className={isDragged ? "is-dragging" : undefined}
+                  onDragOver={(e) => {
+                    const source = draggingRef.current;
+                    if (!source || source === story.id) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    setDropTargetId(story.id);
+                  }}
+                  onDragLeave={(e) => {
+                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                    setDropTargetId((prev) => (prev === story.id ? null : prev));
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    handleDrop(story.id);
+                  }}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px",
+                    minWidth: 0,
+                    borderRadius: "var(--radius-lg)",
+                    outline: isTarget ? "2px dashed var(--accent-primary)" : undefined,
+                    outlineOffset: "3px",
+                  }}
+                >
+                  {stories.length > 1 && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      <SortHandle
+                        label={t("media.story_sort_aria", { position })}
+                        disabled={!canSort}
+                        disabledHint={sortBlockedHint}
+                        size={16}
+                        onDragStart={(e) => {
+                          beginRowDrag(e, story.id);
+                          draggingRef.current = story.id;
+                          setDraggingId(story.id);
+                        }}
+                        onDragEnd={clearDrag}
+                        onMove={(delta) => void moveStory(story.id, index + delta)}
+                      />
+                      <span
+                        className="badge"
+                        aria-hidden="true"
+                        style={{ fontVariantNumeric: "tabular-nums" }}
+                      >
+                        {t("media.story_position", { position })}
+                      </span>
+                      <span style={{ flex: 1 }} />
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        onClick={() => void moveStory(story.id, index - 1)}
+                        disabled={!canSort || index === 0}
+                        aria-label={`${t("media.story_move_earlier")} (${t("media.story_sort_aria", { position })})`}
+                        title={t("media.story_move_earlier")}
+                      >
+                        <ChevronLeft size={16} className="flip-in-rtl" aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        onClick={() => void moveStory(story.id, index + 1)}
+                        disabled={!canSort || index === stories.length - 1}
+                        aria-label={`${t("media.story_move_later")} (${t("media.story_sort_aria", { position })})`}
+                        title={t("media.story_move_later")}
+                      >
+                        <ChevronRight size={16} className="flip-in-rtl" aria-hidden="true" />
+                      </button>
+                    </div>
+                  )}
+                  <StoryCard
+                    story={story}
+                    deleting={deletingId === story.id}
+                    onEdit={() => setEditing(story)}
+                    onDelete={() => void handleDelete(story)}
+                    onShowViewers={() => setViewersFor(story.id)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
 
-      <StoryModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        story={editingStory}
-        onSave={fetchStories}
-      />
+      {editing !== undefined && (
+        <StoryModal
+          key={editing?.id ?? "new"}
+          story={editing}
+          onClose={() => setEditing(undefined)}
+          onSave={() => setReloadKey((n) => n + 1)}
+        />
+      )}
+
+      {viewersFor && (
+        <StoryViewersModal key={viewersFor} storyId={viewersFor} onClose={() => setViewersFor(null)} />
+      )}
     </div>
   );
 }

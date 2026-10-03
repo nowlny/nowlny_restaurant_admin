@@ -2,22 +2,19 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle,
-  CheckCircle2,
   Clock,
   ImagePlus,
   Loader2,
   Save,
   Trash2,
   Plus,
-  MapPin,
-  Undo2,
   Upload,
 } from 'lucide-react';
 import {
+  canEditRestaurant,
   Currency,
-  DeliveryZonePoint,
   ExchangeRate,
+  MessageLanguage,
   OpeningHours,
   RestaurantCategory,
   RestaurantProfile,
@@ -26,12 +23,16 @@ import {
   WEEK_DAYS,
   WeekDay,
 } from '@/services/api/settings';
-import dynamic from 'next/dynamic';
 import { authService } from '@/services/api/auth';
 import { clearSession } from '@/services/api/session';
 import { useRouter } from 'next/navigation';
 import { getApiErrorMessage, isApiStatus } from '@/services/api/errors';
 import { useI18n, type MessageKey } from '@/lib/i18n';
+import { useRestaurant } from '@/lib/restaurantContext';
+import { currencyDecimals, invalidateExchangeRates } from '@/lib/money';
+import { Busy, useFeedback } from '@/components/ui/Feedback';
+import { Field, Notice as NoticeBanner } from '@/components/settings/FormBits';
+import DeliveryZonesPanel from '@/components/settings/DeliveryZonesPanel';
 
 /** Key + optional server text — the load effects must not close over `t`. */
 type Notice = { key: MessageKey; text?: string } | null;
@@ -46,15 +47,6 @@ const MAX_PROFILE_IMAGE_BYTES = 5 * 1024 * 1024;
 
 const toBackgroundImage = (url: string | null) =>
   url ? `url("${url.replace(/["\\\n\r]/g, '')}")` : 'none';
-
-const DeliveryZoneMap = dynamic(() => import('@/components/DeliveryZoneMap'), {
-  ssr: false,
-  loading: () => (
-    <div style={{ height: '500px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-elevated)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-      <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
-    </div>
-  )
-});
 
 /* ── Opening hours ───────────────────────────────────────────────────────────
    The API has no "closed" flag: a day missing from `openingHours` is closed.
@@ -144,8 +136,8 @@ const EMPTY_ADDRESS: AddressForm = {
   longitude: '',
 };
 
-const toAddressForm = (profile: RestaurantProfile): AddressForm => {
-  const address = profile.restaurantAddress;
+const toAddressForm = (profile: RestaurantProfile | null): AddressForm => {
+  const address = profile?.restaurantAddress;
   if (!address) return { ...EMPTY_ADDRESS };
   return {
     city: address.city ?? '',
@@ -164,41 +156,6 @@ const STATUS_KEYS: Record<string, MessageKey> = {
 };
 
 /* ── Shared bits ─────────────────────────────────────────────────────────── */
-
-function NoticeBar({ kind, message }: { kind: 'error' | 'success'; message: string }) {
-  if (!message) return null;
-  const isError = kind === 'error';
-  return (
-    <div
-      role={isError ? 'alert' : 'status'}
-      style={{
-        display: 'flex',
-        gap: '10px',
-        alignItems: isError ? 'flex-start' : 'center',
-        padding: '12px 14px',
-        color: isError ? 'var(--error)' : 'var(--success)',
-        background: isError ? 'rgba(239, 68, 68, 0.08)' : 'rgba(16, 185, 129, 0.08)',
-        border: `1px solid ${isError ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.2)'}`,
-        borderRadius: '10px',
-      }}
-    >
-      {isError ? (
-        <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
-      ) : (
-        <CheckCircle2 size={18} style={{ flexShrink: 0 }} />
-      )}
-      {message}
-    </div>
-  );
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>
-      {children}
-    </label>
-  );
-}
 
 /** `USD (\$)`, or bare `USD` when the API has no symbol — not `USD ()`. */
 const currencyLabel = (currency: Currency) =>
@@ -243,46 +200,51 @@ const TAB_LABEL_KEYS: Record<Tab, MessageKey> = {
   profile: 'settings.tab_profile',
   hours: 'settings.tab_hours',
   exchange: 'settings.tab_exchange',
-  delivery: 'settings.tab_delivery',
+  delivery: 'settingsx.tab_delivery',
 };
+
+const PANEL_STYLE: React.CSSProperties = {
+  padding: 'clamp(16px, 4vw, 24px)',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: '20px',
+};
+
+const SECTION_TITLE: React.CSSProperties = { margin: 0, fontSize: '14px', fontWeight: '600' };
 
 export default function SettingsPage() {
   const router = useRouter();
   const { t } = useI18n();
+  const { toast, confirm } = useFeedback();
+  // The shell has already fetched `/restaurants/me`; start from that copy.
+  const { restaurant, setRestaurant } = useRestaurant();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('profile');
+  const tabRefs = useRef<Partial<Record<Tab, HTMLButtonElement | null>>>({});
 
   // Profile State
-  const [profile, setProfile] = useState<RestaurantProfile | null>(null);
-  const [address, setAddress] = useState<AddressForm>(EMPTY_ADDRESS);
+  const [profile, setProfile] = useState<RestaurantProfile | null>(restaurant);
+  const [address, setAddress] = useState<AddressForm>(() => toAddressForm(restaurant));
   const [allCategories, setAllCategories] = useState<RestaurantCategory[]>([]);
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>(
+    () => (restaurant?.categories ?? []).map((category) => category.id),
+  );
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [backgroundFile, setBackgroundFile] = useState<File | null>(null);
-  const [logoPreview, setLogoPreview] = useState<string | null>(null);
-  const [backgroundPreview, setBackgroundPreview] = useState<string | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(restaurant?.logo ?? null);
+  const [backgroundPreview, setBackgroundPreview] = useState<string | null>(
+    restaurant?.backgroundImageUrl ?? null,
+  );
   const [profileError, setProfileError] = useState<Notice>(null);
-  const [profileSuccess, setProfileSuccess] = useState<Notice>(null);
   const logoObjectUrl = useRef<string | null>(null);
   const backgroundObjectUrl = useRef<string | null>(null);
 
   // Opening hours State
-  const [week, setWeek] = useState<WeekForm>(emptyWeek);
+  const [week, setWeek] = useState<WeekForm>(() => toWeekForm(restaurant?.openingHours));
   const [savingHours, setSavingHours] = useState(false);
   const [hoursError, setHoursError] = useState<Notice>(null);
-  const [hoursSuccess, setHoursSuccess] = useState<Notice>(null);
-
-  // Delivery zone State
-  const [deliveryPolygon, setDeliveryPolygon] = useState<DeliveryZonePoint[]>([]);
-  const [deliveryZoneName, setDeliveryZoneName] = useState('');
-  const [isFetchingPolygon, setIsFetchingPolygon] = useState(true);
-  const [polygonFetched, setPolygonFetched] = useState(false);
-  const [savingZone, setSavingZone] = useState(false);
-  const [zoneError, setZoneError] = useState<Notice>(null);
-  const [zoneSuccess, setZoneSuccess] = useState<Notice>(null);
 
   // Exchange Rates State
   const [exchangeRates, setExchangeRates] = useState<ExchangeRate[]>([]);
@@ -291,7 +253,6 @@ export default function SettingsPage() {
   const [savingRate, setSavingRate] = useState(false);
   const [deletingRateId, setDeletingRateId] = useState<string | null>(null);
   const [ratesError, setRatesError] = useState<Notice>(null);
-  const [ratesSuccess, setRatesSuccess] = useState<Notice>(null);
 
   const applyProfile = (data: RestaurantProfile) => {
     setProfile(data);
@@ -302,10 +263,14 @@ export default function SettingsPage() {
     setBackgroundPreview(data.backgroundImageUrl);
   };
 
+  // Only the first render's copy matters: later context updates come from our
+  // own saves, which have already been applied locally.
+  const hasInitialProfile = useRef(restaurant !== null);
+
   useEffect(() => {
     let cancelled = false;
     Promise.all([
-      SettingsService.getOwnRestaurant(),
+      hasInitialProfile.current ? null : SettingsService.getOwnRestaurant(),
       SettingsService.getExchangeRates(),
       SettingsService.getCurrencies(),
       // Categories are decoration, not a prerequisite — a failure here must not
@@ -314,7 +279,7 @@ export default function SettingsPage() {
     ])
       .then(([profileData, ratesData, currenciesData, categoriesData]) => {
         if (cancelled) return;
-        applyProfile(profileData);
+        if (profileData) applyProfile(profileData);
         setExchangeRates(ratesData);
         setCurrencies(currenciesData);
         setAllCategories(categoriesData);
@@ -343,34 +308,6 @@ export default function SettingsPage() {
     };
   }, []);
 
-  useEffect(() => {
-    if (activeTab === 'delivery' && profile?.id && !polygonFetched) {
-      let cancelled = false;
-      SettingsService.getFullRestaurant(profile.id)
-        .then((fullData) => {
-          if (cancelled) return;
-          const firstZone = fullData.deliveryZones?.[0];
-          setDeliveryPolygon(firstZone?.polygon ?? []);
-          setDeliveryZoneName(firstZone?.name ?? '');
-          setPolygonFetched(true);
-        })
-        .catch((polygonError: unknown) => {
-          if (!cancelled) {
-            setZoneError({
-              key: 'settings.zone_load_failed',
-              text: getApiErrorMessage(polygonError, ''),
-            });
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setIsFetchingPolygon(false);
-        });
-      return () => {
-        cancelled = true;
-      };
-    }
-  }, [activeTab, polygonFetched, profile?.id]);
-
   useEffect(
     () => () => {
       if (logoObjectUrl.current) URL.revokeObjectURL(logoObjectUrl.current);
@@ -388,7 +325,6 @@ export default function SettingsPage() {
     const file = event.target.files?.[0];
     if (!file) return;
     setProfileError(null);
-    setProfileSuccess(null);
 
     if (!PROFILE_IMAGE_TYPES.includes(file.type)) {
       setProfileError({ key: 'settings.image_type_error' });
@@ -464,7 +400,6 @@ export default function SettingsPage() {
     e.preventDefault();
     if (!profile) return;
     setProfileError(null);
-    setProfileSuccess(null);
 
     const currencyId = profile.currency?.code;
     const deliveryFee = Number(profile.deliveryFee);
@@ -517,6 +452,7 @@ export default function SettingsPage() {
         deliveryTimeMaxMinutes: maxDeliveryTime,
         currencyId,
         autoSendToDeliveryCompany: Boolean(profile.autoSendToDeliveryCompany),
+        ...(profile.messageLanguage ? { messageLanguage: profile.messageLanguage } : {}),
         // `categoryIds` replaces the whole set, so it is only sent from here —
         // the surface that actually shows the whole set.
         categoryIds: selectedCategoryIds,
@@ -525,6 +461,8 @@ export default function SettingsPage() {
         ...(backgroundImageUrl ? { backgroundImageUrl } : {}),
       });
       applyProfile(updatedProfile);
+      // So the sidebar's name and logo follow without a reload.
+      setRestaurant(updatedProfile);
       setLogoFile(null);
       setBackgroundFile(null);
       if (logoObjectUrl.current) URL.revokeObjectURL(logoObjectUrl.current);
@@ -533,7 +471,7 @@ export default function SettingsPage() {
       }
       logoObjectUrl.current = null;
       backgroundObjectUrl.current = null;
-      setProfileSuccess({ key: 'settings.profile_saved' });
+      toast.success(t('settings.profile_saved'));
     } catch (saveError: unknown) {
       setProfileError({
         key: 'settings.profile_save_failed',
@@ -546,13 +484,11 @@ export default function SettingsPage() {
 
   const setDay = (day: WeekDay, patch: Partial<DayForm>) => {
     setHoursError(null);
-    setHoursSuccess(null);
     setWeek((previous) => ({ ...previous, [day]: { ...previous[day], ...patch } }));
   };
 
   const handleCopyMondayToAll = () => {
     setHoursError(null);
-    setHoursSuccess(null);
     setWeek((previous) =>
       WEEK_DAYS.reduce((next, day) => {
         next[day] = { ...previous.monday };
@@ -563,7 +499,6 @@ export default function SettingsPage() {
 
   const handleHoursSave = async () => {
     setHoursError(null);
-    setHoursSuccess(null);
 
     const incomplete = WEEK_DAYS.some((day) => {
       const entry = week[day];
@@ -591,8 +526,9 @@ export default function SettingsPage() {
             }
           : updated,
       );
+      setRestaurant(updated);
       setWeek(toWeekForm(updated.openingHours));
-      setHoursSuccess({ key: 'hours.saved' });
+      toast.success(t('hours.saved'));
     } catch (saveError: unknown) {
       setHoursError({
         key: 'hours.save_failed',
@@ -603,51 +539,9 @@ export default function SettingsPage() {
     }
   };
 
-  const handleZoneChange = (next: DeliveryZonePoint[]) => {
-    setZoneError(null);
-    setZoneSuccess(null);
-    setDeliveryPolygon(next);
-  };
-
-  const handleZoneSave = async () => {
-    if (!profile) return;
-    setZoneError(null);
-    setZoneSuccess(null);
-
-    // 0 points is a deliberate "no limits" state; 1–2 is an unfinished shape.
-    if (deliveryPolygon.length > 0 && deliveryPolygon.length < 3) {
-      setZoneError({ key: 'zone.too_few' });
-      return;
-    }
-
-    setSavingZone(true);
-    try {
-      await SettingsService.updateOwnRestaurant({
-        deliveryZones:
-          deliveryPolygon.length >= 3
-            ? [
-                {
-                  name: deliveryZoneName.trim() || profile.name,
-                  polygon: deliveryPolygon,
-                },
-              ]
-            : [],
-      });
-      setZoneSuccess({ key: 'zone.saved' });
-    } catch (saveError: unknown) {
-      setZoneError({
-        key: 'zone.save_failed',
-        text: getApiErrorMessage(saveError, ''),
-      });
-    } finally {
-      setSavingZone(false);
-    }
-  };
-
   const handleAddExchangeRate = async (e: React.FormEvent) => {
     e.preventDefault();
     setRatesError(null);
-    setRatesSuccess(null);
 
     if (newRateForm.fromCurrencyId === newRateForm.toCurrencyId) {
       setRatesError({ key: 'rates.same_currency' });
@@ -669,7 +563,9 @@ export default function SettingsPage() {
       setNewRateForm(prev => ({ ...prev, rate: '' }));
       const ratesData = await SettingsService.getExchangeRates();
       setExchangeRates(ratesData);
-      setRatesSuccess({ key: 'rates.saved' });
+      // Every "≈" price on the menu and orders converts with these.
+      invalidateExchangeRates();
+      toast.success(t('rates.saved'));
     } catch (err) {
       setRatesError({
         key: 'rates.save_failed',
@@ -680,14 +576,21 @@ export default function SettingsPage() {
     }
   };
 
-  const handleDeleteExchangeRate = async (rateId: string) => {
+  const handleDeleteExchangeRate = async (rate: ExchangeRate) => {
+    const confirmed = await confirm({
+      title: t('settingsx.rate_delete_title'),
+      message: t('settingsx.rate_delete_body', { from: rate.fromCurrencyId, to: rate.toCurrencyId }),
+      danger: true,
+    });
+    if (!confirmed) return;
     setRatesError(null);
-    setRatesSuccess(null);
-    setDeletingRateId(rateId);
+    setDeletingRateId(rate.id);
     try {
-      await SettingsService.deleteExchangeRate(rateId);
+      await SettingsService.deleteExchangeRate(rate.id);
       const ratesData = await SettingsService.getExchangeRates();
       setExchangeRates(ratesData);
+      invalidateExchangeRates();
+      toast.success(t('settingsx.rate_deleted'));
     } catch (err) {
       setRatesError({
         key: 'rates.delete_failed',
@@ -699,6 +602,13 @@ export default function SettingsPage() {
   };
 
   const handleDeleteAccount = async () => {
+    const confirmed = await confirm({
+      title: t('settings.delete_confirm_title'),
+      message: t('settings.delete_confirm_body'),
+      confirmLabel: t('settings.delete_confirm_cta'),
+      danger: true,
+    });
+    if (!confirmed) return;
     setIsDeleting(true);
     try {
       await authService.deleteAccount();
@@ -710,11 +620,27 @@ export default function SettingsPage() {
         router.replace('/auth/login');
       } else {
         console.error('Failed to delete account', deleteError);
-        alert(t('settings.delete_failed'));
+        toast.error(getApiErrorMessage(deleteError, t('settings.delete_failed')));
       }
     } finally {
       setIsDeleting(false);
     }
+  };
+
+  /** Arrow keys move between tabs (mirrored in RTL), as the ARIA tab pattern expects. */
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const index = TABS.indexOf(activeTab);
+    const rtl = document.documentElement.dir === 'rtl';
+    let next: number | null = null;
+    if (event.key === 'ArrowRight') next = index + (rtl ? -1 : 1);
+    else if (event.key === 'ArrowLeft') next = index + (rtl ? 1 : -1);
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = TABS.length - 1;
+    if (next === null) return;
+    event.preventDefault();
+    const tab = TABS[(next + TABS.length) % TABS.length];
+    setActiveTab(tab);
+    tabRefs.current[tab]?.focus();
   };
 
   const noticeText = (notice: Notice) =>
@@ -729,53 +655,41 @@ export default function SettingsPage() {
   }
 
   const statusKey = profile?.status ? STATUS_KEYS[profile.status] : undefined;
+  // `PATCH /restaurants/me` only works while ACTIVE or INACTIVE.
+  const savesBlocked = !canEditRestaurant(profile?.status);
 
   return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      <header className="responsive-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '24px', minWidth: 0 }}>
+      <header className="page-header" style={{ marginBottom: 0 }}>
         <div>
-          <h1 style={{ fontSize: '32px', fontWeight: '700', marginBottom: '8px' }}>{t('settings.title')}</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>{t('settings.subtitle')}</p>
+          <h1 className="page-title">{t('settings.title')}</h1>
+          <p className="page-subtitle">{t('settings.subtitle')}</p>
         </div>
       </header>
 
       {statusKey && (
-        <div
-          role="status"
-          style={{
-            display: 'flex',
-            gap: '10px',
-            alignItems: 'flex-start',
-            padding: '14px 16px',
-            color: 'var(--warning)',
-            background: 'rgba(245, 158, 11, 0.08)',
-            border: '1px solid rgba(245, 158, 11, 0.25)',
-            borderRadius: '12px',
-          }}
-        >
-          <AlertCircle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
-          <div>
-            <p style={{ margin: 0, fontWeight: '600' }}>{t(statusKey)}</p>
-            {profile?.rejectionReason && (
-              <p style={{ margin: '4px 0 0', fontSize: '13px' }}>
-                {t('settings.status_reason', { reason: profile.rejectionReason })}
-              </p>
-            )}
-          </div>
-        </div>
+        <NoticeBanner tone={savesBlocked ? 'error' : 'warning'} title={t(statusKey)}>
+          {profile?.rejectionReason && (
+            <p style={{ margin: 0 }}>{t('settings.status_reason', { reason: profile.rejectionReason })}</p>
+          )}
+          {savesBlocked && <p style={{ margin: profile?.rejectionReason ? '4px 0 0' : 0 }}>{t('settingsx.saves_blocked')}</p>}
+        </NoticeBanner>
       )}
 
-      <div className="responsive-flex-wrap" style={{ display: 'flex', gap: '24px', borderBottom: '1px solid var(--border-color)', paddingBottom: '16px', flexWrap: 'wrap' }}>
+      <div className="tab-strip" role="tablist" aria-label={t('settings.title')} onKeyDown={handleTabKeyDown}>
         {TABS.map((tab) => (
           <button
             key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              background: 'none', border: 'none', fontSize: '16px', fontWeight: '600', cursor: 'pointer',
-              color: activeTab === tab ? 'var(--accent-primary)' : 'var(--text-secondary)',
-              borderBottom: activeTab === tab ? '2px solid var(--accent-primary)' : 'none',
-              paddingBottom: '8px'
+            ref={(el) => {
+              tabRefs.current[tab] = el;
             }}
+            type="button"
+            role="tab"
+            id={`settings-tab-${tab}`}
+            aria-selected={activeTab === tab}
+            aria-controls={`settings-panel-${tab}`}
+            tabIndex={activeTab === tab ? 0 : -1}
+            onClick={() => setActiveTab(tab)}
           >
             {t(TAB_LABEL_KEYS[tab])}
           </button>
@@ -783,36 +697,36 @@ export default function SettingsPage() {
       </div>
 
       {activeTab === 'profile' && profile && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '900px' }}>
-          <form onSubmit={handleProfileSave} className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          <NoticeBar kind="error" message={noticeText(profileError)} />
-          <NoticeBar kind="success" message={noticeText(profileSuccess)} />
+        <div
+          role="tabpanel"
+          id="settings-panel-profile"
+          aria-labelledby="settings-tab-profile"
+          style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '900px' }}
+        >
+          <form onSubmit={handleProfileSave} className="glass-panel" style={{ ...PANEL_STYLE, gap: '24px' }}>
+          <NoticeBanner tone="error">{noticeText(profileError)}</NoticeBanner>
           <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-            <div>
-              <FieldLabel>{t('settings.restaurant_name')}</FieldLabel>
-              <input type="text" className="form-input" value={profile.name || ''} onChange={e => setProfile({ ...profile, name: e.target.value })} required />
-            </div>
-            <div>
-              <FieldLabel>{t('settings.phone')}</FieldLabel>
-              <input type="text" className="form-input" value={profile.phone || ''} onChange={e => setProfile({ ...profile, phone: e.target.value })} required />
-            </div>
+            <Field label={t('settings.restaurant_name')}>
+              {(id) => <input id={id} type="text" className="form-input" value={profile.name || ''} onChange={e => setProfile({ ...profile, name: e.target.value })} required />}
+            </Field>
+            <Field label={t('settings.phone')}>
+              {(id) => <input id={id} type="tel" autoComplete="tel" className="form-input force-ltr" value={profile.phone || ''} onChange={e => setProfile({ ...profile, phone: e.target.value })} required />}
+            </Field>
           </div>
 
-          <div>
-            <FieldLabel>{t('settings.description')}</FieldLabel>
-            <textarea className="form-input" rows={3} value={profile.description || ''} onChange={e => setProfile({ ...profile, description: e.target.value })} />
-          </div>
+          <Field label={t('settings.description')}>
+            {(id) => <textarea id={id} className="form-input" rows={3} value={profile.description || ''} onChange={e => setProfile({ ...profile, description: e.target.value })} />}
+          </Field>
 
-          <div>
-            <FieldLabel>{t('settings.website')}</FieldLabel>
-            <input type="url" className="form-input force-ltr" placeholder="https://" value={profile.website || ''} onChange={e => setProfile({ ...profile, website: e.target.value })} />
-          </div>
+          <Field label={t('settings.website')}>
+            {(id) => <input id={id} type="url" className="form-input force-ltr" placeholder="https://" value={profile.website || ''} onChange={e => setProfile({ ...profile, website: e.target.value })} />}
+          </Field>
 
-          <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: 'minmax(220px, 0.8fr) minmax(320px, 1.5fr)', gap: '20px' }}>
+          <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: 'minmax(200px, 0.8fr) minmax(0, 1.5fr)', gap: '20px' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               <div>
-                <p style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>{t('settings.logo')}</p>
-                <p style={{ margin: '3px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>{t('settings.logo_hint')}</p>
+                <p style={SECTION_TITLE}>{t('settings.logo')}</p>
+                <p className="field-hint" style={{ marginTop: '3px' }}>{t('settings.logo_hint')}</p>
               </div>
               <div
                 role="img"
@@ -833,27 +747,28 @@ export default function SettingsPage() {
               >
                 {!logoPreview && <ImagePlus size={32} color="var(--text-muted)" />}
               </div>
+              {/* Visually hidden rather than display:none, so it stays reachable by keyboard. */}
               <input
                 id="restaurant-logo-file"
                 type="file"
+                className="sr-only"
                 accept={PROFILE_IMAGE_TYPES.join(',')}
                 onChange={(event) => handleImageSelection('logo', event)}
-                style={{ display: 'none' }}
               />
               <label
                 htmlFor="restaurant-logo-file"
-                className="btn-outline"
-                style={{ alignSelf: 'flex-start', padding: '9px 14px', fontSize: '13px' }}
+                className="btn-outline btn-sm"
+                style={{ alignSelf: 'flex-start' }}
               >
                 <Upload size={16} /> {logoFile ? t('settings.change_logo_again') : t('settings.change_logo')}
               </label>
               {logoFile && <span style={{ color: 'var(--accent-primary)', fontSize: '12px' }}>{t('settings.image_selected')}</span>}
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', minWidth: 0 }}>
               <div>
-                <p style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>{t('settings.cover')}</p>
-                <p style={{ margin: '3px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>{t('settings.cover_hint')}</p>
+                <p style={SECTION_TITLE}>{t('settings.cover')}</p>
+                <p className="field-hint" style={{ marginTop: '3px' }}>{t('settings.cover_hint')}</p>
               </div>
               <div
                 role="img"
@@ -861,7 +776,7 @@ export default function SettingsPage() {
                 style={{
                   width: '100%',
                   aspectRatio: '16 / 7',
-                  minHeight: '140px',
+                  minHeight: '120px',
                   borderRadius: '20px',
                   display: 'grid',
                   placeItems: 'center',
@@ -878,14 +793,14 @@ export default function SettingsPage() {
               <input
                 id="restaurant-background-file"
                 type="file"
+                className="sr-only"
                 accept={PROFILE_IMAGE_TYPES.join(',')}
                 onChange={(event) => handleImageSelection('background', event)}
-                style={{ display: 'none' }}
               />
               <label
                 htmlFor="restaurant-background-file"
-                className="btn-outline"
-                style={{ alignSelf: 'flex-start', padding: '9px 14px', fontSize: '13px' }}
+                className="btn-outline btn-sm"
+                style={{ alignSelf: 'flex-start' }}
               >
                 <Upload size={16} /> {backgroundFile ? t('settings.change_cover_again') : t('settings.change_cover')}
               </label>
@@ -893,58 +808,58 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <p style={{ margin: '-8px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>
+          <p className="field-hint" style={{ marginTop: '-8px' }}>
             {t('settings.image_rules')}
           </p>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px' }}>
-            <div>
-              <FieldLabel>{t('settings.currency')}</FieldLabel>
-              <select
-                className="form-input"
-                required
-                value={profile.currency?.code ?? ''}
-                onChange={(e) =>
-                  setProfile({
-                    ...profile,
-                    currency:
-                      currencies.find((c) => c.code === e.target.value) ?? null,
-                  })
-                }
-              >
-                <option value="" disabled>{t('settings.currency_placeholder')}</option>
-                {currencies.map((currency) => (
-                  <option key={currency.code} value={currency.code}>
-                    {currencyLabel(currency)}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <FieldLabel>{t('settings.delivery_fee')}</FieldLabel>
-              <input type="number" step="0.01" className="form-input" value={profile.deliveryFee || 0} onChange={e => setProfile({ ...profile, deliveryFee: e.target.value })} />
-            </div>
-            <div>
-              <FieldLabel>{t('settings.min_delivery_time')}</FieldLabel>
-              <input type="number" className="form-input" value={profile.deliveryTimeMinMinutes || 0} onChange={e => setProfile({ ...profile, deliveryTimeMinMinutes: e.target.value })} />
-            </div>
-            <div>
-              <FieldLabel>{t('settings.max_delivery_time')}</FieldLabel>
-              <input type="number" className="form-input" value={profile.deliveryTimeMaxMinutes || 0} onChange={e => setProfile({ ...profile, deliveryTimeMaxMinutes: e.target.value })} />
-            </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))', gap: '16px' }}>
+            <Field label={t('settings.currency')}>
+              {(id) => (
+                <select
+                  id={id}
+                  className="form-input"
+                  required
+                  value={profile.currency?.code ?? ''}
+                  onChange={(e) =>
+                    setProfile({
+                      ...profile,
+                      currency:
+                        currencies.find((c) => c.code === e.target.value) ?? null,
+                    })
+                  }
+                >
+                  <option value="" disabled>{t('settings.currency_placeholder')}</option>
+                  {currencies.map((currency) => (
+                    <option key={currency.code} value={currency.code}>
+                      {currencyLabel(currency)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </Field>
+            {/* The fee is charged in the currency picked just above. */}
+            <Field label={profile.currency?.code ? `${t('settings.delivery_fee')} (${profile.currency.code})` : t('settings.delivery_fee')}>
+              {(id) => <input id={id} type="number" min="0" step={currencyDecimals(profile.currency?.code) === 0 ? '1' : '0.01'} inputMode="decimal" className="form-input force-ltr" value={profile.deliveryFee || 0} onChange={e => setProfile({ ...profile, deliveryFee: e.target.value })} />}
+            </Field>
+            <Field label={t('settings.min_delivery_time')}>
+              {(id) => <input id={id} type="number" min="1" inputMode="numeric" className="form-input force-ltr" value={profile.deliveryTimeMinMinutes || 0} onChange={e => setProfile({ ...profile, deliveryTimeMinMinutes: e.target.value })} />}
+            </Field>
+            <Field label={t('settings.max_delivery_time')}>
+              {(id) => <input id={id} type="number" min="1" inputMode="numeric" className="form-input force-ltr" value={profile.deliveryTimeMaxMinutes || 0} onChange={e => setProfile({ ...profile, deliveryTimeMaxMinutes: e.target.value })} />}
+            </Field>
           </div>
-          <p style={{ margin: '-12px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>
+          <p className="field-hint" style={{ marginTop: '-12px' }}>
             {t('settings.currency_hint')}
           </p>
 
           {/* ── Categories ─────────────────────────────────────────────── */}
           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
-            <p style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>{t('settings.categories_title')}</p>
-            <p style={{ margin: '3px 0 12px', color: 'var(--text-muted)', fontSize: '12px' }}>{t('settings.categories_hint')}</p>
+            <p id="settings-categories-title" style={SECTION_TITLE}>{t('settings.categories_title')}</p>
+            <p className="field-hint" style={{ margin: '3px 0 12px' }}>{t('settings.categories_hint')}</p>
             {allCategories.length === 0 ? (
-              <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>{t('settings.categories_empty')}</p>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', margin: 0 }}>{t('settings.categories_empty')}</p>
             ) : (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div role="group" aria-labelledby="settings-categories-title" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                 {allCategories.map((category) => {
                   const selected = selectedCategoryIds.includes(category.id);
                   return (
@@ -966,7 +881,7 @@ export default function SettingsPage() {
                         fontWeight: '500',
                         cursor: 'pointer',
                         color: selected ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                        backgroundColor: selected ? 'rgba(255, 90, 54, 0.12)' : 'var(--bg-elevated)',
+                        backgroundColor: selected ? 'var(--accent-light)' : 'var(--bg-elevated)',
                         border: `1px solid ${selected ? 'var(--accent-primary)' : 'var(--border-color)'}`,
                       }}
                     >
@@ -981,33 +896,50 @@ export default function SettingsPage() {
           {/* ── Address ────────────────────────────────────────────────── */}
           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
             <div>
-              <p style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>{t('settings.address_title')}</p>
-              <p style={{ margin: '3px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>{t('settings.address_hint')}</p>
+              <p style={SECTION_TITLE}>{t('settings.address_title')}</p>
+              <p className="field-hint" style={{ marginTop: '3px' }}>{t('settings.address_hint')}</p>
             </div>
             <div className="responsive-grid-3" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '16px' }}>
-              <div>
-                <FieldLabel>{t('settings.city')}</FieldLabel>
-                <input type="text" className="form-input" value={address.city} onChange={e => setAddress({ ...address, city: e.target.value })} />
-              </div>
-              <div>
-                <FieldLabel>{t('settings.street')}</FieldLabel>
-                <input type="text" className="form-input" value={address.street} onChange={e => setAddress({ ...address, street: e.target.value })} />
-              </div>
-              <div>
-                <FieldLabel>{t('settings.building')}</FieldLabel>
-                <input type="text" className="form-input" value={address.building} onChange={e => setAddress({ ...address, building: e.target.value })} />
-              </div>
+              <Field label={t('settings.city')}>
+                {(id) => <input id={id} type="text" className="form-input" value={address.city} onChange={e => setAddress({ ...address, city: e.target.value })} />}
+              </Field>
+              <Field label={t('settings.street')}>
+                {(id) => <input id={id} type="text" className="form-input" value={address.street} onChange={e => setAddress({ ...address, street: e.target.value })} />}
+              </Field>
+              <Field label={t('settings.building')}>
+                {(id) => <input id={id} type="text" className="form-input" value={address.building} onChange={e => setAddress({ ...address, building: e.target.value })} />}
+              </Field>
             </div>
             <div className="responsive-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-              <div>
-                <FieldLabel>{t('settings.latitude')}</FieldLabel>
-                <input type="number" step="any" className="form-input force-ltr" placeholder="33.8886" value={address.latitude} onChange={e => setAddress({ ...address, latitude: e.target.value })} />
-              </div>
-              <div>
-                <FieldLabel>{t('settings.longitude')}</FieldLabel>
-                <input type="number" step="any" className="form-input force-ltr" placeholder="35.4955" value={address.longitude} onChange={e => setAddress({ ...address, longitude: e.target.value })} />
-              </div>
+              <Field label={t('settings.latitude')}>
+                {(id) => <input id={id} type="number" step="any" inputMode="decimal" className="form-input force-ltr" placeholder="33.8886" value={address.latitude} onChange={e => setAddress({ ...address, latitude: e.target.value })} />}
+              </Field>
+              <Field label={t('settings.longitude')}>
+                {(id) => <input id={id} type="number" step="any" inputMode="decimal" className="form-input force-ltr" placeholder="35.4955" value={address.longitude} onChange={e => setAddress({ ...address, longitude: e.target.value })} />}
+              </Field>
             </div>
+          </div>
+
+          {/* ── Notifications ──────────────────────────────────────────── */}
+          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '20px' }}>
+            <Field
+              label={t('settingsx.message_language')}
+              hint={t('settingsx.message_language_hint')}
+              style={{ maxWidth: '360px' }}
+            >
+              {(id, describedBy) => (
+                <select
+                  id={id}
+                  aria-describedby={describedBy}
+                  className="form-input"
+                  value={profile.messageLanguage ?? 'ar'}
+                  onChange={(e) => setProfile({ ...profile, messageLanguage: e.target.value as MessageLanguage })}
+                >
+                  <option value="ar">{t('settingsx.language_ar')}</option>
+                  <option value="en">{t('settingsx.language_en')}</option>
+                </select>
+              )}
+            </Field>
           </div>
 
           {/* ── Dispatch ───────────────────────────────────────────────── */}
@@ -1025,43 +957,31 @@ export default function SettingsPage() {
               type="checkbox"
               checked={Boolean(profile.autoSendToDeliveryCompany)}
               onChange={(e) => setProfile({ ...profile, autoSendToDeliveryCompany: e.target.checked })}
-              style={{ width: '18px', height: '18px', marginTop: '2px', accentColor: 'var(--accent-primary)', cursor: 'pointer' }}
+              style={{ width: '18px', height: '18px', marginTop: '2px', accentColor: 'var(--accent-primary)', cursor: 'pointer', flexShrink: 0 }}
             />
             <span>
               <span style={{ display: 'block', fontSize: '14px', fontWeight: '600' }}>{t('settings.auto_dispatch')}</span>
-              <span style={{ display: 'block', margin: '3px 0 0', color: 'var(--text-muted)', fontSize: '12px' }}>{t('settings.auto_dispatch_hint')}</span>
+              <span className="field-hint" style={{ display: 'block', marginTop: '3px' }}>{t('settings.auto_dispatch_hint')}</span>
             </span>
           </label>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '16px' }}>
-            <button type="submit" disabled={saving} className="btn-primary">
-              {saving ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} {t('settings.save_profile')}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
+            <button type="submit" disabled={saving || savesBlocked} className="btn-primary">
+              <Busy busy={saving} label={<><Save size={18} /> {t('settings.save_profile')}</>} busyLabel={t('common.saving')} />
             </button>
           </div>
           </form>
 
-          <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+          <div className="glass-panel" style={{ ...PANEL_STYLE, gap: '16px', borderColor: 'color-mix(in srgb, var(--error) 35%, transparent)' }}>
             <div>
-              <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--error)', marginBottom: '8px' }}>{t('settings.danger_zone')}</h3>
-              <p style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>
+              <h3 style={{ fontSize: '18px', fontWeight: '600', color: 'var(--error)', margin: '0 0 8px' }}>{t('settings.danger_zone')}</h3>
+              <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
                 {t('settings.danger_body')}
               </p>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-              <button
-                type="button"
-                onClick={() => setShowDeleteModal(true)}
-                style={{
-                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                  color: 'var(--error)',
-                  border: '1px solid var(--error)',
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  fontWeight: '600',
-                  cursor: 'pointer'
-                }}
-              >
-                {t('settings.delete_account')}
+            <div>
+              <button type="button" className="btn-danger btn-sm" onClick={handleDeleteAccount} disabled={isDeleting}>
+                <Busy busy={isDeleting} label={<><Trash2 size={16} /> {t('settings.delete_account')}</>} busyLabel={t('common.deleting')} />
               </button>
             </div>
           </div>
@@ -1069,31 +989,25 @@ export default function SettingsPage() {
       )}
 
       {activeTab === 'hours' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '900px' }}>
-          <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div
+          role="tabpanel"
+          id="settings-panel-hours"
+          aria-labelledby="settings-tab-hours"
+          style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '900px' }}
+        >
+          <div className="glass-panel" style={PANEL_STYLE}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
               <Clock size={22} color="var(--accent-primary)" />
-              <h3 style={{ fontSize: '18px', fontWeight: '600' }}>{t('hours.title')}</h3>
+              <h3 style={{ fontSize: '18px', fontWeight: '600', margin: 0 }}>{t('hours.title')}</h3>
               {profile?.isOpen !== undefined && (
-                <span
-                  style={{
-                    padding: '3px 10px',
-                    borderRadius: '999px',
-                    fontSize: '12px',
-                    fontWeight: '600',
-                    color: profile.isOpen ? 'var(--success)' : 'var(--text-muted)',
-                    backgroundColor: profile.isOpen ? 'rgba(16, 185, 129, 0.1)' : 'var(--bg-elevated)',
-                    border: `1px solid ${profile.isOpen ? 'rgba(16, 185, 129, 0.3)' : 'var(--border-color)'}`,
-                  }}
-                >
+                <span className={`badge ${profile.isOpen ? 'badge-success' : ''}`}>
                   {profile.isOpen ? t('hours.currently_open') : t('hours.currently_closed')}
                 </span>
               )}
             </div>
             <p style={{ color: 'var(--text-secondary)', margin: 0, fontSize: '14px' }}>{t('hours.body')}</p>
 
-            <NoticeBar kind="error" message={noticeText(hoursError)} />
-            <NoticeBar kind="success" message={noticeText(hoursSuccess)} />
+            <NoticeBanner tone="error">{noticeText(hoursError)}</NoticeBanner>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {WEEK_DAYS.map((day) => {
@@ -1101,11 +1015,10 @@ export default function SettingsPage() {
                 return (
                   <div
                     key={day}
-                    className="responsive-flex-wrap"
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '16px',
+                      gap: '12px 16px',
                       flexWrap: 'wrap',
                       padding: '12px 14px',
                       borderRadius: '10px',
@@ -1113,7 +1026,7 @@ export default function SettingsPage() {
                       backgroundColor: entry.enabled ? 'var(--bg-elevated)' : 'transparent',
                     }}
                   >
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: '150px', cursor: 'pointer' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: '140px', cursor: 'pointer' }}>
                       <input
                         type="checkbox"
                         checked={entry.enabled}
@@ -1168,14 +1081,14 @@ export default function SettingsPage() {
               })}
             </div>
 
-            <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '12px' }}>{t('hours.overnight_hint')}</p>
+            <p className="field-hint">{t('hours.overnight_hint')}</p>
 
-            <div className="flex-col-mobile" style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center' }}>
-              <button type="button" className="btn-outline" style={{ padding: '9px 14px', fontSize: '13px' }} onClick={handleCopyMondayToAll}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button type="button" className="btn-outline btn-sm" onClick={handleCopyMondayToAll}>
                 {t('hours.copy_monday')}
               </button>
-              <button type="button" className="btn-primary" disabled={savingHours} onClick={handleHoursSave}>
-                {savingHours ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} {t('hours.save')}
+              <button type="button" className="btn-primary" disabled={savingHours || savesBlocked} onClick={handleHoursSave}>
+                <Busy busy={savingHours} label={<><Save size={18} /> {t('hours.save')}</>} busyLabel={t('common.saving')} />
               </button>
             </div>
           </div>
@@ -1183,17 +1096,21 @@ export default function SettingsPage() {
       )}
 
       {activeTab === 'exchange' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '760px' }}>
-          <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <div
+          role="tabpanel"
+          id="settings-panel-exchange"
+          aria-labelledby="settings-tab-exchange"
+          style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '760px' }}
+        >
+          <div className="glass-panel" style={PANEL_STYLE}>
             <div>
-              <h3 style={{ fontSize: '18px', fontWeight: '600' }}>{t('rates.title')}</h3>
+              <h3 style={{ fontSize: '18px', fontWeight: '600', margin: 0 }}>{t('rates.title')}</h3>
               <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: '14px' }}>
                 {t('rates.subtitle')}
               </p>
             </div>
 
-            <NoticeBar kind="error" message={noticeText(ratesError)} />
-            <NoticeBar kind="success" message={noticeText(ratesSuccess)} />
+            <NoticeBanner tone="error">{noticeText(ratesError)}</NoticeBanner>
 
             {exchangeRates.length === 0 ? (
               <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '14px' }}>{t('rates.empty')}</p>
@@ -1207,7 +1124,8 @@ export default function SettingsPage() {
                       justifyContent: 'space-between',
                       alignItems: 'center',
                       gap: '12px',
-                      padding: '12px 12px 12px 16px',
+                      paddingBlock: '12px',
+                      paddingInline: '16px 12px',
                       border: '1px solid var(--border-color)',
                       borderRadius: 'var(--radius-md)',
                       backgroundColor: 'var(--bg-elevated)',
@@ -1221,7 +1139,7 @@ export default function SettingsPage() {
                     <button
                       type="button"
                       className="icon-btn icon-btn-danger"
-                      onClick={() => handleDeleteExchangeRate(rate.id)}
+                      onClick={() => handleDeleteExchangeRate(rate)}
                       disabled={deletingRateId === rate.id}
                       aria-label={t('rates.delete_aria', { from: rate.fromCurrencyId, to: rate.toCurrencyId })}
                     >
@@ -1248,25 +1166,26 @@ export default function SettingsPage() {
             >
               <h4 style={{ fontSize: '16px', fontWeight: '600', margin: 0 }}>{t('rates.add_title')}</h4>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '16px' }}>
-                <div>
-                  <FieldLabel>{t('rates.from')}</FieldLabel>
-                  <select required className="form-input" value={newRateForm.fromCurrencyId} onChange={e => setNewRateForm({ ...newRateForm, fromCurrencyId: e.target.value })}>
-                    <option value="" disabled>{t('settings.currency_placeholder')}</option>
-                    {currencies.map(c => <option key={c.code} value={c.code}>{currencyLabel(c)}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <FieldLabel>{t('rates.to')}</FieldLabel>
-                  <select required className="form-input" value={newRateForm.toCurrencyId} onChange={e => setNewRateForm({ ...newRateForm, toCurrencyId: e.target.value })}>
-                    <option value="" disabled>{t('settings.currency_placeholder')}</option>
-                    {currencies.map(c => <option key={c.code} value={c.code}>{currencyLabel(c)}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <FieldLabel>{t('rates.rate')}</FieldLabel>
-                  <input required type="number" min="0" step="0.0001" className="form-input force-ltr" placeholder={t('rates.rate_placeholder')} value={newRateForm.rate} onChange={e => setNewRateForm({ ...newRateForm, rate: e.target.value })} />
-                </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))', gap: '16px' }}>
+                <Field label={t('rates.from')}>
+                  {(id) => (
+                    <select id={id} required className="form-input" value={newRateForm.fromCurrencyId} onChange={e => setNewRateForm({ ...newRateForm, fromCurrencyId: e.target.value })}>
+                      <option value="" disabled>{t('settings.currency_placeholder')}</option>
+                      {currencies.map(c => <option key={c.code} value={c.code}>{currencyLabel(c)}</option>)}
+                    </select>
+                  )}
+                </Field>
+                <Field label={t('rates.to')}>
+                  {(id) => (
+                    <select id={id} required className="form-input" value={newRateForm.toCurrencyId} onChange={e => setNewRateForm({ ...newRateForm, toCurrencyId: e.target.value })}>
+                      <option value="" disabled>{t('settings.currency_placeholder')}</option>
+                      {currencies.map(c => <option key={c.code} value={c.code}>{currencyLabel(c)}</option>)}
+                    </select>
+                  )}
+                </Field>
+                <Field label={t('rates.rate')}>
+                  {(id) => <input id={id} required type="number" min="0" step="0.0001" inputMode="decimal" className="form-input force-ltr" placeholder={t('rates.rate_placeholder')} value={newRateForm.rate} onChange={e => setNewRateForm({ ...newRateForm, rate: e.target.value })} />}
+                </Field>
               </div>
 
               {/* The three fields read as "from / to / rate", but the value they
@@ -1302,7 +1221,7 @@ export default function SettingsPage() {
                   className="btn-primary"
                   disabled={savingRate || !newRateForm.rate}
                 >
-                  {savingRate ? <Loader2 className="animate-spin" size={18} /> : <Plus size={18} />} {t('rates.add')}
+                  <Busy busy={savingRate} label={<><Plus size={18} /> {t('rates.add')}</>} busyLabel={t('common.saving')} />
                 </button>
               </div>
             </form>
@@ -1310,158 +1229,14 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {activeTab === 'delivery' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '800px', width: '100%' }}>
-          <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <MapPin size={24} color="var(--accent-primary)" />
-              <h3 style={{ fontSize: '18px', fontWeight: '600' }}>{t('zone.title')}</h3>
-            </div>
-            <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
-              {t('zone.body')}
-            </p>
-
-            <NoticeBar kind="error" message={noticeText(zoneError)} />
-            <NoticeBar kind="success" message={noticeText(zoneSuccess)} />
-
-            {isFetchingPolygon ? (
-              <div style={{ height: '500px', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--bg-elevated)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
-                <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
-              </div>
-            ) : !polygonFetched ? (
-              // The load failed, so the map would show an empty polygon that is
-              // not the truth. Saving from there would replace a zone the
-              // operator never got to see — show only the error instead.
-              null
-            ) : (
-              <>
-                <div style={{ maxWidth: '320px' }}>
-                  <FieldLabel>{t('zone.name')}</FieldLabel>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder={profile?.name ?? ''}
-                    value={deliveryZoneName}
-                    onChange={(e) => setDeliveryZoneName(e.target.value)}
-                  />
-                </div>
-
-                <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: '12px' }}>{t('zone.editor_hint')}</p>
-
-                <DeliveryZoneMap
-                  polygon={deliveryPolygon}
-                  editable
-                  center={
-                    profile?.restaurantAddress?.latitude != null &&
-                    profile?.restaurantAddress?.longitude != null
-                      ? {
-                          lat: profile.restaurantAddress.latitude,
-                          lng: profile.restaurantAddress.longitude,
-                        }
-                      : null
-                  }
-                  onChange={handleZoneChange}
-                />
-
-                {deliveryPolygon.length === 0 && (
-                  <p style={{ margin: 0, color: 'var(--warning)', fontSize: '12px' }}>{t('zone.cleared_hint')}</p>
-                )}
-
-                <div className="flex-col-mobile" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
-                      {t('zone.corner_count', { count: deliveryPolygon.length })}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ padding: '8px 12px', fontSize: '13px' }}
-                      disabled={deliveryPolygon.length === 0}
-                      onClick={() => handleZoneChange(deliveryPolygon.slice(0, -1))}
-                    >
-                      <Undo2 size={15} /> {t('zone.undo')}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-outline"
-                      style={{ padding: '8px 12px', fontSize: '13px' }}
-                      disabled={deliveryPolygon.length === 0}
-                      onClick={() => handleZoneChange([])}
-                    >
-                      <Trash2 size={15} /> {t('zone.clear')}
-                    </button>
-                  </div>
-                  <button type="button" className="btn-primary" disabled={savingZone} onClick={handleZoneSave}>
-                    {savingZone ? <Loader2 className="animate-spin" size={18} /> : <Save size={18} />} {t('zone.save')}
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Delete Account Modal */}
-      {showDeleteModal && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.5)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 50,
-          padding: '16px'
-        }}>
-          <div className="glass-panel animate-fade-in" style={{
-            backgroundColor: 'var(--bg-surface)',
-            padding: '24px',
-            borderRadius: '12px',
-            maxWidth: '400px',
-            width: '100%',
-            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)'
-          }}>
-            <h3 style={{ fontSize: '20px', fontWeight: '700', marginBottom: '16px', color: 'var(--text-primary)' }}>{t('settings.delete_confirm_title')}</h3>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '24px', fontSize: '14px', lineHeight: '1.5' }}>
-              {t('settings.delete_confirm_body')}
-            </p>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
-              <button
-                onClick={() => setShowDeleteModal(false)}
-                disabled={isDeleting}
-                style={{
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  border: '1px solid var(--border-color)',
-                  backgroundColor: 'transparent',
-                  color: 'var(--text-primary)',
-                  fontWeight: '500',
-                  cursor: isDeleting ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {t('common.cancel')}
-              </button>
-              <button
-                onClick={handleDeleteAccount}
-                disabled={isDeleting}
-                style={{
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  border: 'none',
-                  backgroundColor: 'var(--error)',
-                  color: 'white',
-                  fontWeight: '600',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  cursor: isDeleting ? 'not-allowed' : 'pointer'
-                }}
-              >
-                {isDeleting ? <Loader2 className="animate-spin" size={16} /> : <Trash2 size={16} />}
-                {t('settings.delete_confirm_cta')}
-              </button>
-            </div>
-          </div>
+      {activeTab === 'delivery' && profile && (
+        <div
+          role="tabpanel"
+          id="settings-panel-delivery"
+          aria-labelledby="settings-tab-delivery"
+          style={{ display: 'flex', flexDirection: 'column', gap: '24px', maxWidth: '800px', width: '100%' }}
+        >
+          <DeliveryZonesPanel restaurant={profile} blocked={savesBlocked} />
         </div>
       )}
     </div>

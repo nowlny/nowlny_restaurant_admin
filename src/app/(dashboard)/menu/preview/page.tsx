@@ -23,12 +23,11 @@ import {
   MenuSection,
   MenuService,
 } from "@/services/api/menu";
-import {
-  RestaurantProfile,
-  SettingsService,
-} from "@/services/api/settings";
 import { getApiErrorMessage } from "@/services/api/errors";
-import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
+import { useI18n, type MessageKey } from "@/lib/i18n";
+import { useMenuMoney } from "@/lib/menuMoney";
+import { stockStatusText } from "@/lib/stock";
+import { useRestaurant } from "@/lib/restaurantContext";
 import styles from "./preview.module.css";
 
 /** Key + optional server text — `loadPreview` is a stable callback used by an
@@ -54,7 +53,11 @@ const getDiscount = (item: MenuItem) => {
 
 export default function MenuPreviewPage() {
   const { t, locale } = useI18n();
-  const [restaurant, setRestaurant] = useState<RestaurantProfile | null>(null);
+  // The shell already fetched `/restaurants/me`; asking again here doubled the
+  // request on every visit.
+  const { restaurant } = useRestaurant();
+  const restaurantId = restaurant?.id ?? null;
+  const money = useMenuMoney();
   const [sections, setSections] = useState<PreviewSection[]>([]);
   const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
@@ -80,8 +83,8 @@ export default function MenuPreviewPage() {
     setError(null);
 
     try {
-      const profile = await SettingsService.getOwnRestaurant();
-      const sectionData = await MenuService.getSectionsByRestaurant(profile.id);
+      if (!restaurantId) return;
+      const sectionData = await MenuService.getSectionsByRestaurant(restaurantId);
       const visibleSections = sectionData
         .filter((section) => section.isActive !== false)
         .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -101,7 +104,6 @@ export default function MenuPreviewPage() {
       const customerVisibleSections = sectionsWithItems.filter(
         (section) => section.items.length > 0,
       );
-      setRestaurant(profile);
       setSections(customerVisibleSections);
       setActiveSectionId(customerVisibleSections[0]?.id ?? null);
     } catch (previewError: unknown) {
@@ -113,7 +115,7 @@ export default function MenuPreviewPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [restaurantId]);
 
   useEffect(() => {
     const initialRequest = window.setTimeout(() => {
@@ -139,17 +141,8 @@ export default function MenuPreviewPage() {
     };
   }, [closeItemDetails, selectedItem]);
 
-  const formatPrice = (value: number | string | null | undefined) => {
-    const amount = toNumber(value);
-    const currencyCode = restaurant?.currency?.code?.toUpperCase() || "LBP";
-
-    if (currencyCode === "USD") return `$${amount.toFixed(2)}`;
-    if (currencyCode === "LBP") {
-      return `${Math.round(amount).toLocaleString(intlLocale(locale))} L.L.`;
-    }
-
-    return `${amount.toFixed(2)} ${restaurant?.currency?.symbol || currencyCode}`;
-  };
+  // Same formatter as the menu editor, so both screens print a price alike.
+  const formatPrice = money.format;
 
   const openItemDetails = async (item: MenuItem) => {
     if (item.isAvailable === false) return;
@@ -428,6 +421,10 @@ export default function MenuPreviewPage() {
                                   )}
                                 </span>
                                 {item.description && <small>{item.description}</small>}
+                                {/* When it comes back on its own: what a customer sees too. */}
+                                {item.isAvailable === false && (item.availableAt || item.outOfStockUntil) && (
+                                  <small style={{ color: "var(--error)" }}>{stockStatusText(item, locale)}</small>
+                                )}
                                 <span className={styles.priceRow}>
                                   <strong>
                                     {formatPrice(discount ?? item.price)}
@@ -436,6 +433,12 @@ export default function MenuPreviewPage() {
                                     <del>{formatPrice(item.price)}</del>
                                   )}
                                 </span>
+                                {/* Mirrors the customer app's dual price. */}
+                                {money.secondary(discount ?? item.price) && (
+                                  <small style={{ display: "block", opacity: 0.6 }}>
+                                    {money.secondary(discount ?? item.price)}
+                                  </small>
+                                )}
                               </span>
 
                               <span
@@ -533,6 +536,11 @@ export default function MenuPreviewPage() {
                 </strong>
                 {getDiscount(selectedItem) !== null && (
                   <del>{formatPrice(selectedItem.price)}</del>
+                )}
+                {money.secondary(getDiscount(selectedItem) ?? selectedItem.price) && (
+                  <small style={{ display: "block", opacity: 0.6 }}>
+                    {money.secondary(getDiscount(selectedItem) ?? selectedItem.price)}
+                  </small>
                 )}
               </div>
 

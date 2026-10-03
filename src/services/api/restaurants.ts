@@ -38,8 +38,9 @@ export interface SubmitRestaurantApplication {
   currencyId: string;
 }
 
+/** UpdateMySubmissionDto — the name field is `restaurantName`, not `name`. */
 export interface UpdateRestaurantSubmission {
-  name?: string;
+  restaurantName?: string;
   description?: string;
   currencyId?: string;
 }

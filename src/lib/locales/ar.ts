@@ -1,4 +1,15 @@
 import type { MessageKey } from "./en";
+import { shellAr } from "./parts/shell.ar";
+import { menuAr } from "./parts/menu.ar";
+import { ordersAr } from "./parts/orders.ar";
+import { mediaAr } from "./parts/media.ar";
+import { settingsAr } from "./parts/settings.ar";
+import { stockAr } from "./parts/stock.ar";
+import { fleetAr } from "./parts/fleet.ar";
+import { integrationsAr } from "./parts/integrations.ar";
+import { notificationsAr } from "./parts/notifications.ar";
+import { liveordersAr } from "./parts/liveorders.ar";
+import { accountAr } from "./parts/account.ar";
 
 /**
  * Arabic translations. Typed against `MessageKey`, so adding a key to `en.ts`
@@ -18,6 +29,11 @@ export const ar: Record<MessageKey, string> = {
   "nav.stories": "القصص",
   "nav.reels": "الريلز",
   "nav.settings": "الإعدادات",
+  "nav.fleet": "السائقون",
+  "nav.integrations": "شركات التوصيل",
+  "nav.notifications": "الإشعارات",
+  "nav.account": "حسابي",
+  "nav.stock_schedules": "جداول التوفر",
   "nav.partner_dashboard": "لوحة الشريك",
   "nav.default_partner": "شريك نَولني",
   "nav.open_menu": "فتح قائمة التنقل",
@@ -489,6 +505,14 @@ export const ar: Record<MessageKey, string> = {
   "reel.save_failed": "تعذّر حفظ الريل",
   "reel.video_upload_failed": "تعذّر رفع الفيديو. يرجى المحاولة مرة أخرى.",
   "reel.thumbnail_upload_failed": "تعذّر رفع الصورة المصغّرة. يرجى المحاولة مرة أخرى.",
+  "reel.video_too_large": "حجم هذا الفيديو {size} ميغابايت، وهو يتجاوز الحد {limit} ميغابايت. قصّه أو اضغطه أولًا.",
+  "reel.link_label": "أو استورد من رابط",
+  "reel.link_placeholder": "الصق رابط ريل من إنستغرام أو رابط فيديو",
+  "reel.link_import": "استيراد",
+  "reel.link_importing": "جارٍ الاستيراد…",
+  "reel.link_hint": "ريلز إنستغرام تأتي مع الغلاف والوصف. تُنسخ الروابط إلى استضافتنا حتى لا يختفي الفيديو لاحقًا.",
+  "reel.link_invalid": "هذا لا يبدو رابطًا. يجب أن يبدأ بـ https://",
+  "reel.link_failed": "تعذّر استيراد هذا الرابط. تأكد أنه عام، أو نزّل الفيديو وارفع الملف.",
 
   // ── QR dine-in menu ──
   "qr.title": "قائمة الطعام برمز QR",
@@ -623,4 +647,17 @@ export const ar: Record<MessageKey, string> = {
   "error.reference": "المرجع: {digest}",
   "error.retry": "حاول مجددًا",
   "error.go_home": "العودة إلى الرئيسية",
+
+  // ── Per-area strings (src/lib/locales/parts) ──
+  ...shellAr,
+  ...menuAr,
+  ...ordersAr,
+  ...mediaAr,
+  ...settingsAr,
+  ...stockAr,
+  ...fleetAr,
+  ...integrationsAr,
+  ...notificationsAr,
+  ...liveordersAr,
+  ...accountAr,
 };

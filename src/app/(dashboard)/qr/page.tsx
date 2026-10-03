@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QRCodeCanvas } from "qrcode.react";
-import { Check, Copy, Download, Loader2, Printer } from "lucide-react";
-import { SettingsService } from "@/services/api/settings";
-import { getApiErrorMessage } from "@/services/api/errors";
+import { Check, Copy, Download, Printer } from "lucide-react";
+import { useRestaurant } from "@/lib/restaurantContext";
+import { useFeedback } from "@/components/ui/Feedback";
 import { useI18n } from "@/lib/i18n";
+import styles from "./qr.module.css";
 
 /** Public dine-in web menu; the QR code simply deep-links to it. */
 // www on purpose: it serves the app-link verification files directly; the
@@ -24,42 +25,18 @@ const fileNameSlug = (name: string) =>
 
 export default function QrPage() {
   const { t } = useI18n();
-  const [restaurant, setRestaurant] = useState<{
-    id: string;
-    name: string;
-  } | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState("");
+  const { toast } = useFeedback();
+  // The shell has already fetched and verified the profile.
+  const { restaurant } = useRestaurant();
   const [copied, setCopied] = useState(false);
   const downloadCanvasRef = useRef<HTMLCanvasElement>(null);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fetchRestaurant = async () => {
-    try {
-      const profile = await SettingsService.getOwnRestaurant();
-      setRestaurant({ id: profile.id, name: profile.name });
-    } catch (err) {
-      console.error("Failed to fetch restaurant profile", err);
-      setErrorMessage(getApiErrorMessage(err, ""));
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    // Fetch-on-mount, same as the stories/reels pages.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void fetchRestaurant();
     return () => {
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
-
-  const handleRetry = () => {
-    setLoading(true);
-    setErrorMessage("");
-    void fetchRestaurant();
-  };
 
   const menuUrl = restaurant ? `${MENU_BASE_URL}/${restaurant.id}` : "";
 
@@ -71,7 +48,9 @@ export default function QrPage() {
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
       copyResetRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (err) {
+      // Clipboard access is refused on http and in some embedded browsers.
       console.error("Failed to copy menu link", err);
+      toast.error(t("media.qr_copy_failed"));
     }
   };
 
@@ -85,94 +64,26 @@ export default function QrPage() {
   };
 
   return (
-    <div
-      className="animate-fade-in"
-      style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-    >
-      <header className="responsive-header">
+    <div className="animate-fade-in">
+      <header className="page-header">
         <div>
-          <h1
-            style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
-          >
-            {t("qr.title")}
-          </h1>
-          <p style={{ color: "var(--text-secondary)" }}>{t("qr.subtitle")}</p>
+          <h1 className="page-title">{t("qr.title")}</h1>
+          <p className="page-subtitle">{t("qr.subtitle")}</p>
         </div>
       </header>
 
-      {loading ? (
-        <div
-          style={{ display: "flex", justifyContent: "center", padding: "40px" }}
-        >
-          <Loader2
-            className="animate-spin"
-            size={32}
-            color="var(--accent-primary)"
-          />
-        </div>
-      ) : !restaurant ? (
-        <div
-          className="glass-panel"
-          style={{
-            padding: "40px",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: "16px",
-            textAlign: "center",
-          }}
-        >
-          <p style={{ color: "var(--text-secondary)" }}>
-            {errorMessage || t("error.title")}
-          </p>
-          <button className="btn-outline" onClick={handleRetry}>
-            {t("error.retry")}
-          </button>
+      {!restaurant ? (
+        <div className="empty-state" role="alert">
+          <h3>{t("error.title")}</h3>
         </div>
       ) : (
-        <div
-          className="glass-panel"
-          style={{
-            padding: "40px 32px",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: "28px",
-            maxWidth: "560px",
-            width: "100%",
-            margin: "0 auto",
-          }}
-        >
+        <div className={`card ${styles.panel}`}>
           {/* Only this block survives `window.print()` — see globals.css. */}
-          <div
-            className="qr-print-area"
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: "16px",
-            }}
-          >
-            <h2
-              style={{
-                fontSize: "22px",
-                fontWeight: "700",
-                margin: 0,
-                textAlign: "center",
-              }}
-            >
-              {restaurant.name}
-            </h2>
+          <div className={`qr-print-area ${styles.printArea}`}>
+            <h2 className={styles.name}>{restaurant.name}</h2>
             {/* White box so the code keeps its quiet zone and scans on the
-                dark theme. */}
-            <div
-              style={{
-                backgroundColor: "#ffffff",
-                padding: "20px",
-                borderRadius: "16px",
-                display: "flex",
-              }}
-            >
+                dark theme — a scanner needs dark-on-light whatever the theme. */}
+            <div className={styles.codeBox}>
               <QRCodeCanvas
                 value={menuUrl}
                 size={240}
@@ -180,11 +91,10 @@ export default function QrPage() {
                 bgColor="#ffffff"
                 fgColor="#000000"
                 title={t("qr.scan_hint")}
+                className={styles.code}
               />
             </div>
-            <p style={{ color: "var(--text-secondary)", margin: 0 }}>
-              {t("qr.scan_hint")}
-            </p>
+            <p className={styles.hint}>{t("qr.scan_hint")}</p>
           </div>
 
           {/* Hidden high-resolution copy, rendered only to feed the PNG
@@ -201,66 +111,24 @@ export default function QrPage() {
             />
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "8px",
-              width: "100%",
-            }}
-          >
-            <span
-              style={{
-                fontSize: "13px",
-                fontWeight: "600",
-                color: "var(--text-secondary)",
-              }}
-            >
-              {t("qr.link_label")}
-            </span>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "12px",
-                flexWrap: "wrap",
-              }}
-            >
-              <code
-                dir="ltr"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  padding: "10px 14px",
-                  borderRadius: "var(--radius-sm)",
-                  border: "1px solid var(--border-color)",
-                  backgroundColor: "var(--bg-elevated)",
-                  color: "var(--text-primary)",
-                  fontSize: "13px",
-                  overflowWrap: "anywhere",
-                }}
-              >
+          <div className="field" style={{ width: "100%" }}>
+            <span className="field-label">{t("qr.link_label")}</span>
+            <div className={styles.linkRow}>
+              <code dir="ltr" className={styles.link}>
                 {menuUrl}
               </code>
-              <button className="btn-outline" onClick={() => void handleCopy()}>
+              <button type="button" className="btn-outline" onClick={() => void handleCopy()}>
                 {copied ? <Check size={18} /> : <Copy size={18} />}
-                {copied ? t("qr.copied") : t("qr.copy_link")}
+                <span aria-live="polite">{copied ? t("qr.copied") : t("qr.copy_link")}</span>
               </button>
             </div>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              gap: "12px",
-              flexWrap: "wrap",
-              justifyContent: "center",
-            }}
-          >
-            <button className="btn-primary" onClick={handleDownload}>
+          <div className={styles.actions}>
+            <button type="button" className="btn-primary" onClick={handleDownload}>
               <Download size={18} /> {t("qr.download_png")}
             </button>
-            <button className="btn-outline" onClick={() => window.print()}>
+            <button type="button" className="btn-outline" onClick={() => window.print()}>
               <Printer size={18} /> {t("qr.print")}
             </button>
           </div>

@@ -9,9 +9,10 @@ import {
   Currency,
   restaurantsService,
 } from "@/services/api/restaurants";
-import { Store, ArrowRight, Loader2 } from "lucide-react";
+import { Store, ArrowRight, Loader2, AlertCircle } from "lucide-react";
 import { useI18n, type MessageKey } from "@/lib/i18n";
 import ChromeControls from "@/components/ChromeControls";
+import { AUTH_CARD_PADDING, AUTH_PAGE_PADDING } from "../_components/AuthInputs";
 import "@/app/globals.css";
 
 /** Key + optional server text, so a language switch retranslates the error. */
@@ -132,13 +133,13 @@ export default function CompleteSignupPage() {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      padding: '20px',
+      padding: AUTH_PAGE_PADDING,
       background: 'radial-gradient(circle at top right, var(--accent-light), transparent 40%), var(--bg-base)'
     }}>
       <div className="glass-panel animate-slide-up" style={{
         maxWidth: '500px',
         width: '100%',
-        padding: '40px',
+        padding: AUTH_CARD_PADDING,
         display: 'flex',
         flexDirection: 'column',
         gap: '24px'
@@ -152,7 +153,7 @@ export default function CompleteSignupPage() {
           }}>
             <Store size={32} />
           </div>
-          <h1 style={{ fontSize: '28px', fontWeight: '700', marginBottom: '8px' }}>{t('signup.title')}</h1>
+          <h1 style={{ fontSize: 'clamp(24px, 6vw, 28px)', fontWeight: '700', marginBottom: '8px' }}>{t('signup.title')}</h1>
           <p style={{ color: 'var(--text-secondary)' }}>
             {t('signup.subtitle')}
           </p>
@@ -161,24 +162,23 @@ export default function CompleteSignupPage() {
         <ChromeControls style={{ justifyContent: 'center' }} />
 
         {errorText && (
-          <div role="alert" style={{
-            padding: '12px', background: 'rgba(239, 68, 68, 0.1)',
-            color: 'var(--error)', borderRadius: '8px', fontSize: '14px',
-            border: '1px solid rgba(239, 68, 68, 0.2)'
-          }}>
-            {errorText}
+          <div role="alert" className="notice notice-error">
+            <AlertCircle size={18} />
+            <span>{errorText}</span>
           </div>
         )}
 
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label htmlFor="owner-full-name" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>{t('signup.owner_name')} <span style={{ color: 'var(--error)'}}>*</span></label>
+          <div className="field">
+            <label htmlFor="owner-full-name" className="field-label">{t('signup.owner_name')} <span aria-hidden="true" style={{ color: 'var(--error)' }}>*</span></label>
             <input
               id="owner-full-name"
+              autoComplete="name"
+              required
               type="text"
               placeholder={t('signup.owner_name_placeholder')}
-              className="input-field"
+              className="form-input"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
             />
@@ -186,38 +186,41 @@ export default function CompleteSignupPage() {
 
           <div style={{ height: '1px', background: 'var(--border-color)', margin: '8px 0' }} />
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label htmlFor="restaurant-name" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>{t('signup.restaurant_name')} <span style={{ color: 'var(--error)'}}>*</span></label>
+          <div className="field">
+            <label htmlFor="restaurant-name" className="field-label">{t('signup.restaurant_name')} <span aria-hidden="true" style={{ color: 'var(--error)' }}>*</span></label>
             <input
               id="restaurant-name"
+              autoComplete="organization"
+              required
               type="text"
               placeholder={t('signup.restaurant_name_placeholder')}
-              className="input-field"
+              className="form-input"
               value={restaurantName}
               onChange={(e) => setRestaurantName(e.target.value)}
             />
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label htmlFor="restaurant-description" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>{t('signup.description')}</label>
+          <div className="field">
+            <label htmlFor="restaurant-description" className="field-label">{t('signup.description')}</label>
             <textarea
               id="restaurant-description"
               placeholder={t('signup.description_placeholder')}
-              className="input-field"
+              className="form-input"
               value={restaurantDesc}
               onChange={(e) => setRestaurantDesc(e.target.value)}
               rows={3}
-              style={{ resize: 'vertical' }}
             />
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <label htmlFor="restaurant-currency" style={{ fontSize: '14px', fontWeight: '500', color: 'var(--text-secondary)' }}>
-              {t('signup.currency')} <span style={{ color: 'var(--error)' }}>*</span>
+          <div className="field">
+            <label htmlFor="restaurant-currency" className="field-label">
+              {t('signup.currency')} <span aria-hidden="true" style={{ color: 'var(--error)' }}>*</span>
             </label>
             <select
               id="restaurant-currency"
-              className="input-field"
+              aria-describedby="restaurant-currency-hint"
+              required
+              className="form-input"
               value={currencyId}
               onChange={(event) => setCurrencyId(event.target.value)}
               disabled={isLoadingCurrencies}
@@ -234,9 +237,9 @@ export default function CompleteSignupPage() {
                 ))
               )}
             </select>
-            <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>
+            <p id="restaurant-currency-hint" className="field-hint">
               {t('signup.currency_hint')}
-            </span>
+            </p>
           </div>
 
           <button type="submit" className="btn-primary" disabled={isLoading || isLoadingCurrencies || !currencyId} style={{ width: '100%', marginTop: '8px' }}>

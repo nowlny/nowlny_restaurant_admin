@@ -1,14 +1,18 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
-import { Loader2, Menu, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Loader2, Menu, RefreshCw } from 'lucide-react';
 import { getApiErrorMessage, isApiNotFound, isApiStatus } from '@/services/api/errors';
 import { SettingsService, type RestaurantProfile } from '@/services/api/settings';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, type MessageKey } from '@/lib/i18n';
 import { useSessionStatus } from '@/lib/useSession';
 import ChromeControls from '@/components/ChromeControls';
+import BusyToggle from '@/components/BusyToggle';
+import { FeedbackProvider } from '@/components/ui/Feedback';
+import { RestaurantProvider } from '@/lib/restaurantContext';
+import LiveOrderAlert from '@/components/orders/LiveOrderAlert';
 
 /** The one route inside the shell that a partner without a restaurant may see. */
 const APPLICATION_ROUTE = '/application';
@@ -92,6 +96,33 @@ export default function DashboardLayout({
     sessionStatus,
   ]);
 
+  const restaurantContext = useMemo(
+    () => ({ restaurant, setRestaurant: (profile: RestaurantProfile) => setRestaurant(profile) }),
+    [restaurant],
+  );
+
+  const closeMobileMenu = useCallback(() => setIsMobileMenuOpen(false), []);
+
+  /** Only a live, approved restaurant can pause orders; the others can't take any. */
+  const busyToggle = (compact: boolean) =>
+    restaurant && (restaurant.status === 'active' || !restaurant.status) ? (
+      <BusyToggle
+        compact={compact}
+        initial={{ busy: Boolean(restaurant.isBusy), until: restaurant.busyUntil ?? null }}
+      />
+    ) : null;
+
+  // Suspended owners used to get the full dashboard with no hint why their
+  // saves were failing; say it once, above every page.
+  const statusNotice: { tone: string; key: MessageKey } | null =
+    restaurant?.status === 'suspended'
+      ? { tone: 'notice-error', key: 'shell.status_suspended' }
+      : restaurant?.status === 'rejected'
+        ? { tone: 'notice-error', key: 'shell.status_rejected' }
+        : restaurant?.status === 'inactive'
+          ? { tone: 'notice-warning', key: 'shell.status_inactive' }
+          : null;
+
   const retryAccessCheck = useCallback(() => {
     setAttempt((current) => current + 1);
   }, []);
@@ -109,7 +140,7 @@ export default function DashboardLayout({
 
   if (sessionStatus !== 'authenticated' || isVerifying) {
     return (
-      <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ height: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" />
       </div>
     );
@@ -117,7 +148,7 @@ export default function DashboardLayout({
 
   if (accessError && needsRestaurant) {
     return (
-      <div style={{ height: '100vh', display: 'grid', placeItems: 'center', padding: '24px' }}>
+      <div style={{ minHeight: '100dvh', display: 'grid', placeItems: 'center', padding: '24px' }}>
         <div className="glass-panel" style={{ maxWidth: '460px', padding: '28px', textAlign: 'center' }}>
           <h1 style={{ margin: '0 0 10px', fontSize: '22px' }}>{t('gate.access_unavailable')}</h1>
           <p style={{ margin: '0 0 20px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>{accessError}</p>
@@ -131,29 +162,28 @@ export default function DashboardLayout({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', backgroundColor: 'var(--bg-base)' }}>
+    <RestaurantProvider value={restaurantContext}>
+    <FeedbackProvider>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100dvh', backgroundColor: 'var(--bg-base)' }}>
       {/* Mobile Header */}
-      <header className="mobile-only" style={{
-        display: 'none', // Overridden by CSS to display: flex !important
-        alignItems: 'center',
-        padding: '16px',
-        backgroundColor: 'var(--bg-surface)',
-        borderBottom: '1px solid var(--border-color)',
-        position: 'sticky',
-        top: 0,
-        zIndex: 40
-      }}>
+      <header className="mobile-header">
         <button
+          type="button"
+          className="icon-btn"
           onClick={() => setIsMobileMenuOpen(true)}
           aria-label={t('nav.open_menu')}
-          style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '8px', color: 'var(--text-primary)' }}
+          aria-expanded={isMobileMenuOpen}
+          style={{ color: 'var(--text-primary)' }}
         >
-          <Menu size={24} />
+          <Menu size={22} />
         </button>
-        <h1 style={{ fontSize: '18px', fontWeight: '700', marginInlineStart: '12px' }}>{t('app.short_title')}</h1>
-        {/* On mobile the sidebar footer is behind a drawer, so the switches get
-            their own home in the header where they stay one tap away. */}
-        <ChromeControls style={{ marginInlineStart: 'auto' }} />
+        <h1>{restaurant?.name || t('app.short_title')}</h1>
+        <div style={{ marginInlineStart: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {busyToggle(true)}
+          {/* On mobile the sidebar footer is behind a drawer, so the switches
+              get their own home in the header where they stay one tap away. */}
+          <ChromeControls />
+        </div>
       </header>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
@@ -163,12 +193,22 @@ export default function DashboardLayout({
         <Sidebar
           profile={restaurant}
           isOpen={isMobileMenuOpen}
-          onClose={() => setIsMobileMenuOpen(false)}
+          onClose={closeMobileMenu}
+          statusSlot={<div className="hide-on-mobile">{busyToggle(false)}</div>}
         />
-        <main className="main-content" style={{ flex: 1, padding: '32px', overflowY: 'auto' }}>
+        <main className="main-content" style={{ flex: 1, padding: '32px', overflowY: 'auto', minWidth: 0 }}>
+          {statusNotice && (
+            <div className={`notice ${statusNotice.tone} shell-banner`} role="status">
+              <AlertTriangle size={18} />
+              <span>{t(statusNotice.key)}</span>
+            </div>
+          )}
           {children}
         </main>
       </div>
     </div>
+    <LiveOrderAlert />
+    </FeedbackProvider>
+    </RestaurantProvider>
   );
 }

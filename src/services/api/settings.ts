@@ -101,6 +101,45 @@ export interface RestaurantProfile {
   status?: RestaurantStatus;
   /** Populated only when `status` is `rejected`. */
   rejectionReason?: string | null;
+  /** On a temporary busy pause: open per the schedule, but refusing new orders. */
+  isBusy?: boolean;
+  /** ISO 8601. When the pause lapses on its own; `null` = until resumed by hand. */
+  busyUntil?: string | null;
+  busyReason?: string | null;
+  /** Open AND not busy — whether a customer can order right now. */
+  isAcceptingOrders?: boolean;
+  /** Language of the SMS reminder sent when an order goes unanswered. */
+  messageLanguage?: MessageLanguage;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type MessageLanguage = "ar" | "en";
+
+/** `PATCH /restaurants/me` is rejected outright in any other status. */
+export const EDITABLE_STATUSES: readonly RestaurantStatus[] = ["active", "inactive"];
+
+export const canEditRestaurant = (status?: RestaurantStatus): boolean =>
+  !status || EDITABLE_STATUSES.includes(status);
+
+/** `GET`/`PATCH /restaurants/me/busy` — BusyStateResponseDto. */
+export interface BusyState {
+  busy: boolean;
+  /** ISO 8601, or `null` when the pause has no end time (or `busy` is false). */
+  until: string | null;
+}
+
+/** SetBusyDto. */
+export interface SetBusyPayload {
+  /** `true` pauses new orders, `false` resumes them. */
+  busy: boolean;
+  /**
+   * ISO 8601 end of the pause; must be in the future and at most 24h out (the
+   * API answers 400 otherwise). Lapses server-side, so the dashboard need not
+   * be open to un-busy. Ignored when `busy` is false.
+   */
+  until?: string;
+  reason?: string;
 }
 
 export interface RestaurantFullResponse {
@@ -140,6 +179,8 @@ export interface UpdateRestaurantProfile {
   openingHours?: OpeningHours[];
   restaurantAddress?: UpdateRestaurantAddress;
   autoSendToDeliveryCompany?: boolean;
+  hasOffer?: boolean;
+  messageLanguage?: MessageLanguage;
   /** Replaces ALL categories. */
   categoryIds?: string[];
   /** Replaces ALL zones; `[]` clears them. */
@@ -164,6 +205,47 @@ export const SettingsService = {
   getFullRestaurant: async (id: string): Promise<RestaurantFullResponse> => {
     const { data } = await apiClient.get<RestaurantFullResponse>(
       `/restaurants/${id}/full`,
+    );
+    return data;
+  },
+
+  /**
+   * Every zone the restaurant has. `deliveryZones` on save replaces the whole
+   * set, so the editor must start from all of them — not just the first.
+   * Falls back to `/full` (which also carries the zones) if the list endpoint
+   * fails or answers in a shape we don't recognise: guessing "no zones" here
+   * would let the next save wipe them.
+   */
+  getDeliveryZones: async (id: string): Promise<DeliveryZone[]> => {
+    try {
+      const { data } = await apiClient.get<unknown>(
+        `/restaurants/${id}/delivery-zones`,
+      );
+      const list = Array.isArray(data)
+        ? data
+        : (data as { data?: unknown } | null)?.data;
+      if (
+        Array.isArray(list) &&
+        list.every((zone) => Array.isArray((zone as DeliveryZone)?.polygon))
+      ) {
+        return list as DeliveryZone[];
+      }
+    } catch {
+      // fall through to /full
+    }
+    const full = await SettingsService.getFullRestaurant(id);
+    return full.deliveryZones ?? [];
+  },
+
+  getBusy: async (): Promise<BusyState> => {
+    const { data } = await apiClient.get<BusyState>("/restaurants/me/busy");
+    return data;
+  },
+
+  setBusy: async (payload: SetBusyPayload): Promise<BusyState> => {
+    const { data } = await apiClient.patch<BusyState>(
+      "/restaurants/me/busy",
+      payload,
     );
     return data;
   },
@@ -199,6 +281,14 @@ export const SettingsService = {
     const { data } = await apiClient.get<
       ExchangeRate[] | PaginatedResponse<ExchangeRate>
     >("/restaurants/me/exchange-rate");
+    return Array.isArray(data) ? data : data.data || [];
+  },
+
+  /** Platform-wide rates, used when the restaurant hasn't set its own. Public. */
+  getDefaultExchangeRates: async (): Promise<ExchangeRate[]> => {
+    const { data } = await apiClient.get<
+      ExchangeRate[] | PaginatedResponse<ExchangeRate>
+    >("/currencies/exchange-rates/default");
     return Array.isArray(data) ? data : data.data || [];
   },
 
@@ -238,3 +328,7 @@ export const SettingsService = {
     return Array.isArray(data) ? data : data.data || [];
   },
 };
+
+/** Busy-mode helpers for the shell header's pause toggle. */
+export const getBusy = SettingsService.getBusy;
+export const setBusy = SettingsService.setBusy;

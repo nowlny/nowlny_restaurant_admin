@@ -1,196 +1,269 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Loader2, Upload } from 'lucide-react';
-import { StoriesService } from '@/services/api/stories';
+"use client";
+
+import React, { useId, useRef, useState } from 'react';
+import { Upload } from 'lucide-react';
+import Modal from '@/components/ui/Modal';
+import { Busy, useFeedback } from '@/components/ui/Feedback';
+import { StoriesService, type Story, type StoryPayload } from '@/services/api/stories';
+import { getApiErrorMessage } from '@/services/api/errors';
 import { useI18n } from '@/lib/i18n';
+import {
+  isVideoUrl,
+  MAX_IMAGE_BYTES,
+  MAX_VIDEO_BYTES,
+  toMegabytes,
+  uploadFile,
+  videoPosterUrl,
+} from '@/lib/reelMedia';
+import styles from '@/components/media/media.module.css';
+
+const CAPTION_MAX = 300;
+
+type MediaKind = 'image' | 'video';
 
 interface StoryModalProps {
-  isOpen: boolean;
+  /** Mounted only while open, keyed by story, so the form starts from `story` every time. */
+  story: Story | null;
   onClose: () => void;
-  story?: any;
   onSave: () => void;
 }
 
-export default function StoryModal({ isOpen, onClose, story, onSave }: StoryModalProps) {
+export default function StoryModal({ story, onClose, onSave }: StoryModalProps) {
   const { t } = useI18n();
-  const [loading, setLoading] = useState(false);
+  const { toast } = useFeedback();
+  const formId = useId();
+  const mediaId = useId();
+  const captionId = useId();
+
+  // One field for "the media": the clip for a video story, the picture
+  // otherwise. Old video stories kept the clip in `imageUrl`.
+  const [mediaUrl, setMediaUrl] = useState(story?.videoUrl || story?.imageUrl || '');
+  const [mediaKind, setMediaKind] = useState<MediaKind>(
+    story?.videoUrl || isVideoUrl(story?.imageUrl) ? 'video' : 'image',
+  );
+  const [caption, setCaption] = useState(story?.caption || '');
   const [isUploading, setIsUploading] = useState(false);
-  const [formData, setFormData] = useState({ imageUrl: '', caption: '' });
+  const [progress, setProgress] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [saving, setSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (story) {
-      setFormData({
-        imageUrl: story.imageUrl || '',
-        caption: story.caption || ''
-      });
-    } else {
-      setFormData({ imageUrl: '', caption: '' });
+  const busy = saving || isUploading;
+
+  const uploadMedia = async (file: File) => {
+    const kind: MediaKind = file.type.startsWith('video/') ? 'video' : 'image';
+    const limit = kind === 'video' ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+    if (file.size > limit) {
+      const vars = { size: toMegabytes(file.size), limit: toMegabytes(limit) };
+      toast.error(kind === 'video' ? t('reel.video_too_large', vars) : t('media.image_too_large', vars));
+      return;
     }
-  }, [story, isOpen]);
-
-  if (!isOpen) return null;
-
-  const uploadMediaToCloudinary = async (file: File): Promise<string> => {
     setIsUploading(true);
+    setProgress(0);
     try {
-      const isVideo = file.type.startsWith('video/');
-      const resourceType = isVideo ? 'video' : 'image';
-
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('upload_preset', 'ml_default');
-      formData.append('cloud_name', 'dtm5iglra');
-
-      const cldRes = await fetch(
-        `https://api.cloudinary.com/v1_1/dtm5iglra/${resourceType}/upload`,
-        {
-          method: 'POST',
-          body: formData,
-        }
-      );
-
-      const cldData = await cldRes.json();
-      if (cldData.secure_url || cldData.url) {
-        return cldData.secure_url || cldData.url;
-      } else {
-        throw new Error(cldData.error?.message || 'Cloudinary upload failed');
-      }
+      const uploadedUrl = await uploadFile(file, kind, setProgress);
+      setMediaUrl(uploadedUrl);
+      setMediaKind(kind);
+    } catch (err) {
+      console.error('Failed to upload story media', err);
+      toast.error(t('stories.upload_failed'));
     } finally {
       setIsUploading(false);
     }
   };
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      try {
-        const uploadedUrl = await uploadMediaToCloudinary(file);
-        setFormData(prev => ({ ...prev, imageUrl: uploadedUrl }));
-      } catch (err) {
-        console.error('Failed to upload file', err);
-        alert(t('stories.upload_failed'));
-      }
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Clear so re-picking the same file still fires `change`.
+    e.target.value = '';
+    if (file) void uploadMedia(file);
+  };
+
+  /** The still the apps show before a video story loads — `imageUrl` is required by the API. */
+  const posterFor = (videoUrl: string) => {
+    // Unchanged clip: keep whatever poster it already had.
+    if (story?.videoUrl === videoUrl && story.imageUrl && !isVideoUrl(story.imageUrl)) {
+      return story.imageUrl;
     }
+    // A clip from elsewhere has no poster we can derive; the legacy shape
+    // (video in imageUrl) is what older stories already look like.
+    return videoPosterUrl(videoUrl) ?? videoUrl;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
+    const url = mediaUrl.trim();
+    if (!url || busy) return;
+
+    const payload: StoryPayload =
+      mediaKind === 'video'
+        ? { imageUrl: posterFor(url), videoUrl: url, caption: caption.trim() }
+        : {
+            imageUrl: url,
+            caption: caption.trim(),
+            // Swapping a video story's clip for a photo has to clear the clip.
+            ...(story?.videoUrl ? { videoUrl: null } : {}),
+          };
+
+    setSaving(true);
     try {
-      if (story) {
-        await StoriesService.updateStory(story.id, formData);
-      } else {
-        await StoriesService.createStory(formData);
-      }
+      if (story) await StoriesService.updateStory(story.id, payload);
+      else await StoriesService.createStory(payload);
+      toast.success(t('media.story_saved'));
       onSave();
       onClose();
     } catch (err) {
       console.error('Failed to save story', err);
-      alert(t('stories.save_failed'));
+      toast.error(getApiErrorMessage(err, t('stories.save_failed')));
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
-  const isVideoUrl = (url: string) => {
-    if (!url) return false;
-    const lower = url.toLowerCase();
-    return lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.includes('/video/upload/');
-  };
+  const pickFile = () => fileInputRef.current?.click();
 
   return (
-    <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0, 0, 0, 0.5)', zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div className="glass-panel" style={{ width: '100%', maxWidth: '400px', padding: '24px', maxHeight: '90vh', overflowY: 'auto' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-          <h2 style={{ fontSize: '20px', fontWeight: '600' }}>{story ? t('stories.edit_title') : t('stories.new_title')}</h2>
-          <button onClick={onClose} aria-label={t('common.close')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-            <X size={24} />
+    <Modal
+      open
+      onClose={onClose}
+      title={story ? t('stories.edit_title') : t('stories.new_title')}
+      maxWidth={440}
+      dismissible={!saving}
+      footer={
+        <>
+          <button type="button" className="btn-outline" onClick={onClose} disabled={saving}>
+            {t('common.cancel')}
           </button>
+          <button type="submit" form={formId} className="btn-primary" disabled={busy || !mediaUrl.trim()}>
+            <Busy busy={saving} label={t('stories.save')} busyLabel={t('common.saving')} />
+          </button>
+        </>
+      }
+    >
+      <form id={formId} onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+        <div className="field">
+          <label className="field-label" htmlFor={mediaId}>
+            {t('stories.media_label')} <span className={styles.required} aria-hidden="true">*</span>
+          </label>
+
+          {mediaUrl ? (
+            <div className={styles.preview} style={{ height: '260px' }}>
+              {mediaKind === 'video' ? (
+                <video
+                  src={mediaUrl}
+                  poster={videoPosterUrl(mediaUrl) ?? undefined}
+                  controls
+                  playsInline
+                  preload="metadata"
+                />
+              ) : (
+                // eslint-disable-next-line @next/next/no-img-element -- arbitrary Cloudinary/pasted URLs; next/image has no remotePatterns for them
+                <img src={mediaUrl} alt={t('stories.preview_alt')} decoding="async" />
+              )}
+              {isUploading && (
+                <div className={styles.previewBusy} role="status">
+                  {t('stories.uploading')} {Math.round(progress * 100)}%
+                  <div className={styles.progress}><span style={{ width: `${progress * 100}%` }} /></div>
+                </div>
+              )}
+              <button id={mediaId} type="button" className={styles.replace} onClick={pickFile} disabled={busy}>
+                {t('stories.change_media')}
+              </button>
+            </div>
+          ) : (
+            <button
+              id={mediaId}
+              type="button"
+              className={`${styles.tile}${isDragging ? ` ${styles.tileActive}` : ''}`}
+              onClick={pickFile}
+              disabled={busy}
+              onDragOver={(e) => {
+                if (!e.dataTransfer.types.includes('Files')) return;
+                e.preventDefault();
+                setIsDragging(true);
+              }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => {
+                setIsDragging(false);
+                const file = e.dataTransfer.files?.[0];
+                if (!file || busy) return;
+                e.preventDefault();
+                void uploadMedia(file);
+              }}
+            >
+              {isUploading ? (
+                <>
+                  <span className={styles.tileTitle} role="status">
+                    {t('stories.uploading')} {Math.round(progress * 100)}%
+                  </span>
+                  <span className={styles.progress}><span style={{ width: `${progress * 100}%` }} /></span>
+                </>
+              ) : (
+                <>
+                  <span className={styles.tileIcon}><Upload size={24} /></span>
+                  <span>
+                    <span className={styles.tileTitle}>{t('stories.upload_prompt')}</span>
+                    <span className={styles.tileHint}>{t('media.media_formats')}</span>
+                  </span>
+                </>
+              )}
+            </button>
+          )}
+
+          <p className="field-hint">
+            {t('media.story_media_hint', {
+              image: toMegabytes(MAX_IMAGE_BYTES),
+              video: toMegabytes(MAX_VIDEO_BYTES),
+            })}
+          </p>
+
+          {/* Fallback for media that already lives online. */}
+          <input
+            type="url"
+            inputMode="url"
+            dir="ltr"
+            className="form-input"
+            aria-label={t('stories.url_placeholder')}
+            placeholder={t('stories.url_placeholder')}
+            value={mediaUrl}
+            onChange={(e) => {
+              setMediaUrl(e.target.value);
+              setMediaKind(isVideoUrl(e.target.value) ? 'video' : 'image');
+            }}
+            disabled={busy}
+          />
         </div>
 
-        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('stories.media_label')} *</label>
-            
-            {formData.imageUrl ? (
-              <div style={{ width: '100%', height: '200px', borderRadius: '8px', overflow: 'hidden', backgroundColor: 'var(--bg-surface)', position: 'relative' }}>
-                {isVideoUrl(formData.imageUrl) ? (
-                  <video src={formData.imageUrl} controls style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                ) : (
-                  <img src={formData.imageUrl} alt={t('stories.preview_alt')} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                )}
-                
-                <button 
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="btn-outline"
-                  style={{ position: 'absolute', bottom: '8px', insetInlineEnd: '8px', padding: '6px 12px', fontSize: '12px', backgroundColor: 'var(--bg-surface)' }}
-                  disabled={isUploading}
-                >
-                  {t('stories.change_media')}
-                </button>
-              </div>
-            ) : (
-              <div 
-                onClick={() => !isUploading && fileInputRef.current?.click()}
-                style={{ 
-                  width: '100%', height: '150px', borderRadius: '8px', border: '2px dashed var(--border-color)', 
-                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                  cursor: isUploading ? 'default' : 'pointer', backgroundColor: 'var(--bg-surface)'
-                }}
-              >
-                {isUploading ? (
-                  <>
-                    <Loader2 className="animate-spin" size={32} color="var(--accent-primary)" style={{ marginBottom: '8px' }} />
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{t('stories.uploading')}</span>
-                  </>
-                ) : (
-                  <>
-                    <Upload size={32} color="var(--text-muted)" style={{ marginBottom: '8px' }} />
-                    <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{t('stories.upload_prompt')}</span>
-                  </>
-                )}
-              </div>
-            )}
-            
-            <input 
-              type="file"
-              ref={fileInputRef}
-              style={{ display: 'none' }}
-              accept="image/*,video/mp4,video/quicktime"
-              onChange={handleFileChange}
-            />
-            
-            {/* Fallback manual URL input */}
-            <div style={{ marginTop: '8px' }}>
-              <input 
-                type="url" 
-                className="form-input" 
-                placeholder={t('stories.url_placeholder')}
-                value={formData.imageUrl}
-                onChange={e => setFormData({ ...formData, imageUrl: e.target.value })}
-                disabled={isUploading}
-              />
-            </div>
+        <div className="field">
+          <div className={styles.labelRow}>
+            <label className="field-label" htmlFor={captionId}>{t('stories.caption')}</label>
+            <span className={styles.optional}>{t('common.optional')}</span>
           </div>
+          <textarea
+            id={captionId}
+            className="form-input"
+            rows={3}
+            maxLength={CAPTION_MAX}
+            placeholder={t('stories.caption_placeholder')}
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+          />
+          <span className={styles.counter} aria-live="polite">
+            {t('media.caption_count', { count: caption.length, max: CAPTION_MAX })}
+          </span>
+        </div>
 
-          <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontSize: '14px', fontWeight: '500' }}>{t('stories.caption')}</label>
-            <textarea 
-              className="form-input" 
-              rows={3}
-              placeholder={t('stories.caption_placeholder')}
-              value={formData.caption}
-              onChange={e => setFormData({ ...formData, caption: e.target.value })}
-            />
-          </div>
-
-          <button type="submit" disabled={loading || isUploading || !formData.imageUrl} className="btn-primary" style={{ marginTop: '16px', justifyContent: 'center' }}>
-            {loading ? <Loader2 className="animate-spin" size={20} /> : t('stories.save')}
-          </button>
-        </form>
-      </div>
-    </div>
+        {/* Last in the form: Modal focuses the first input on open, and a
+            hidden file input can't take focus. */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          hidden
+          tabIndex={-1}
+          accept="image/*,video/mp4,video/quicktime,video/webm"
+          onChange={handleFileChange}
+        />
+      </form>
+    </Modal>
   );
 }

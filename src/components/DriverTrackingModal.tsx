@@ -10,8 +10,9 @@ import {
   Navigation,
   Phone,
   Radio,
-  X,
 } from "lucide-react";
+import Modal from "@/components/ui/Modal";
+import { orderCode, statusLabel } from "@/components/orders/orderMeta";
 import {
   createDeliveryTrackingSocket,
   DriverLocation,
@@ -23,15 +24,6 @@ import {
   RestaurantOrder,
 } from "@/services/api/orders";
 import { intlLocale, useI18n, type Locale, type MessageKey } from "@/lib/i18n";
-
-const ORDER_STATUS_KEYS: Record<OrderStatus, MessageKey> = {
-  pending: "order_status.pending",
-  confirmed: "order_status.confirmed",
-  out_for_delivery: "order_status.out_for_delivery",
-  delivered: "order_status.delivered",
-  cancelled: "order_status.cancelled",
-  rejected: "order_status.rejected",
-};
 
 /**
  * Socket errors are held as a key plus the server's own wording: the socket
@@ -147,14 +139,6 @@ export default function DriverTrackingModal({
   }, []);
 
   useEffect(() => {
-    const onEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onEscape);
-    return () => window.removeEventListener("keydown", onEscape);
-  }, [onClose]);
-
-  useEffect(() => {
     let disposed = false;
     let socket: ReturnType<typeof createDeliveryTrackingSocket> | null = null;
 
@@ -250,72 +234,11 @@ export default function DriverTrackingModal({
           : t("tracking.connecting");
 
   return (
-    <div
-      role="presentation"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 120,
-        display: "grid",
-        placeItems: "center",
-        padding: "20px",
-        background: "rgba(0, 0, 0, 0.68)",
-      }}
-      onClick={onClose}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="driver-tracking-title"
-        className="glass-panel"
-        style={{
-          width: "min(860px, 100%)",
-          maxHeight: "calc(100vh - 40px)",
-          overflowY: "auto",
-          padding: "24px",
-        }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: "16px",
-            marginBottom: "20px",
-          }}
-        >
-          <div>
-            <p style={{ margin: "0 0 5px", color: "var(--text-muted)", fontSize: "12px" }}>
-              {order.orderNumber ||
-                t("dispatch.order_fallback", {
-                  code: order.id.slice(-6).toUpperCase(),
-                })}
-            </p>
-            <h2 id="driver-tracking-title" style={{ margin: 0, fontSize: "24px" }}>
-              {t("tracking.title")}
-            </h2>
-          </div>
-          <button
-            type="button"
-            aria-label={t("tracking.close")}
-            onClick={onClose}
-            style={{
-              border: 0,
-              width: "36px",
-              height: "36px",
-              display: "grid",
-              placeItems: "center",
-              borderRadius: "50%",
-              cursor: "pointer",
-              color: "var(--text-primary)",
-              background: "var(--bg-elevated)",
-            }}
-          >
-            <X size={20} />
-          </button>
-        </div>
-
+    <Modal open stacked onClose={onClose} maxWidth={860} title={t("tracking.title")}>
+      <div>
+        <p style={{ margin: "0 0 4px", color: "var(--text-muted)", fontSize: "12px" }}>
+          <span className="force-ltr">{orderCode(order)}</span>
+        </p>
         <div
           style={{
             display: "flex",
@@ -342,10 +265,10 @@ export default function DriverTrackingModal({
                     : "var(--warning)",
               background:
                 connectionState === "error"
-                  ? "rgba(239, 68, 68, 0.1)"
+                  ? "var(--error-bg)"
                   : connectionState === "live"
-                    ? "rgba(16, 185, 129, 0.1)"
-                    : "rgba(234, 179, 8, 0.1)",
+                    ? "var(--success-bg)"
+                    : "var(--warning-bg)",
             }}
           >
             {connectionState === "connecting" || connectionState === "reconnecting" ? (
@@ -361,11 +284,11 @@ export default function DriverTrackingModal({
               borderRadius: "999px",
               fontSize: "12px",
               fontWeight: 700,
-              color: "#a855f7",
-              background: "rgba(168, 85, 247, 0.1)",
+              color: "var(--accent-2)",
+              background: "var(--accent-2-bg)",
             }}
           >
-            {t(ORDER_STATUS_KEYS[liveStatus])}
+            {statusLabel(t, liveStatus)}
           </span>
           <span
             style={{
@@ -381,17 +304,7 @@ export default function DriverTrackingModal({
         </div>
 
         {trackingErrorText && (
-          <div
-            role="alert"
-            style={{
-              marginBottom: "16px",
-              padding: "11px 13px",
-              borderRadius: "10px",
-              color: "var(--error)",
-              background: "rgba(239, 68, 68, 0.08)",
-              border: "1px solid rgba(239, 68, 68, 0.18)",
-            }}
-          >
+          <div role="alert" className="notice notice-error" style={{ marginBottom: "16px" }}>
             {trackingErrorText}
           </div>
         )}
@@ -501,6 +414,6 @@ export default function DriverTrackingModal({
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

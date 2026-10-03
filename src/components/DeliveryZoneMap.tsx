@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   MapContainer,
   Marker,
@@ -13,14 +13,8 @@ import {
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 
-// Fix for default markers in Leaflet with Next.js
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl:
-    "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
-  iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
-  shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
-});
+// No default Leaflet pin is rendered (every Marker passes `vertexIcon`), so
+// the usual `L.Icon.Default` URL patch is not needed.
 
 type LatLng = { lat: number; lng: number };
 
@@ -29,6 +23,10 @@ const DEFAULT_CENTER: [number, number] = [33.8938, 35.5018];
 
 /** Shared identity, so an absent polygon does not re-run the memo every render. */
 const NO_POINTS: LatLng[] = [];
+const NO_ZONES: LatLng[][] = [];
+
+/** Full height on a desktop, but never taller than most of a phone screen. */
+export const MAP_HEIGHT = "min(500px, 60vh)";
 
 /**
  * Vertex handle. The default Leaflet pin is a 25×41 teardrop whose tip marks
@@ -75,15 +73,23 @@ function ClickToAdd({ onAdd }: { onAdd: (point: LatLng) => void }) {
 
 export default function DeliveryZoneMap({
   polygon = NO_POINTS,
+  otherZones = NO_ZONES,
   editable = false,
   center,
   onChange,
+  emptyText = "No delivery zone defined for this restaurant.",
 }: {
   polygon: LatLng[];
+  /**
+   * The restaurant's other zones, drawn faint and non-interactive so the zone
+   * being edited can be lined up against its neighbours.
+   */
+  otherZones?: LatLng[][];
   editable?: boolean;
   /** Where to open when there is no polygon yet — usually the restaurant pin. */
   center?: LatLng | null;
   onChange?: (next: LatLng[]) => void;
+  emptyText?: string;
 }) {
   const points = polygon;
 
@@ -96,7 +102,7 @@ export default function DeliveryZoneMap({
     return (
       <div
         style={{
-          height: "400px",
+          height: MAP_HEIGHT,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -105,9 +111,7 @@ export default function DeliveryZoneMap({
           border: "1px solid var(--border-color)",
         }}
       >
-        <p style={{ color: "var(--text-secondary)" }}>
-          No delivery zone defined for this restaurant.
-        </p>
+        <p style={{ color: "var(--text-secondary)" }}>{emptyText}</p>
       </div>
     );
   }
@@ -125,7 +129,7 @@ export default function DeliveryZoneMap({
   return (
     <div
       style={{
-        height: "500px",
+        height: MAP_HEIGHT,
         width: "100%",
         borderRadius: "12px",
         overflow: "hidden",
@@ -143,6 +147,23 @@ export default function DeliveryZoneMap({
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
+
+        {otherZones
+          .filter((zone) => zone.length >= 3)
+          .map((zone, index) => (
+            <Polygon
+              key={`other-${index}`}
+              positions={zone.map((p) => [p.lat, p.lng] as [number, number])}
+              interactive={false}
+              pathOptions={{
+                color: "var(--text-muted)",
+                fillColor: "var(--text-muted)",
+                fillOpacity: 0.08,
+                weight: 2,
+                dashArray: "4 6",
+              }}
+            />
+          ))}
 
         {positions.length >= 3 ? (
           <Polygon

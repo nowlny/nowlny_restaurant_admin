@@ -1,0 +1,87 @@
+/** English strings for fleet: drivers and invitations. Every key here needs a twin in fleet.ar.ts. */
+export const fleetEn = {
+  // ── Page ──
+  "fleet.title": "Drivers",
+  "fleet.subtitle": "Invite drivers to your fleet and choose who can take your deliveries.",
+  "fleet.invite": "Invite driver",
+  "fleet.filter_label": "Filter drivers by status",
+  "fleet.filter_all": "All",
+  "fleet.filter_active": "Active",
+  "fleet.filter_inactive": "Inactive",
+  "fleet.search_placeholder": "Search by name or phone",
+  "fleet.refresh": "Refresh",
+
+  // ── Roster ──
+  "fleet.load_failed": "Couldn't load your drivers.",
+  "fleet.empty_title": "No drivers yet",
+  "fleet.empty_body": "Invite registered drivers by phone number to build your fleet.",
+  "fleet.no_results": "No drivers match these filters.",
+  "fleet.clear_filters": "Clear filters",
+  "fleet.unnamed": "Unnamed driver",
+  "fleet.status_active": "Active",
+  "fleet.status_inactive": "Inactive",
+  "fleet.available": "Available",
+  "fleet.unavailable": "Unavailable",
+  "fleet.no_plate": "No plate",
+  "fleet.vehicle_unknown": "Vehicle not set",
+  "fleet.vehicle.motorcycle": "Motorcycle",
+  "fleet.vehicle.car": "Car",
+  "fleet.vehicle.bicycle": "Bicycle",
+  "fleet.vehicle.scooter": "Scooter",
+  "fleet.manage_named": "Manage {name}",
+  "fleet.remove_named": "Remove {name}",
+  "fleet.manage": "Manage",
+
+  // ── Remove ──
+  "fleet.remove": "Remove from fleet",
+  "fleet.remove_title": "Remove this driver?",
+  "fleet.remove_message": "Remove {name} from your fleet? Their driver account stays active.",
+  "fleet.remove_confirm": "Remove",
+  "fleet.removed": "{name} was removed from your fleet",
+  "fleet.remove_failed": "Couldn't remove the driver.",
+
+  // ── Pending invitations ──
+  "fleet.pending_title": "Pending invitations",
+  "fleet.pending_hint": "Awaiting the driver's response",
+  "fleet.invited_on": "Invited {date}",
+  "fleet.invitations_failed": "Couldn't load pending invitations.",
+  "fleet.revoke_named": "Revoke the invitation to {phone}",
+  "fleet.revoke_title": "Revoke this invitation?",
+  "fleet.revoke_message": "Cancel the pending invitation to {phone}?",
+  "fleet.revoke_confirm": "Revoke",
+  "fleet.revoked": "Invitation revoked",
+  "fleet.revoke_failed": "Couldn't revoke the invitation.",
+
+  // ── Invite ──
+  "fleet.invite_title": "Invite a driver",
+  "fleet.invite_hint":
+    "Enter the phone number the driver registered with in the Nowlny driver app. They join your fleet once they accept the invitation.",
+  "fleet.phone_label": "Driver's phone number",
+  "fleet.phone_placeholder": "71 234 567",
+  "fleet.send_invite": "Send invitation",
+  "fleet.sending": "Sending…",
+  "fleet.invalid_phone": "Enter a valid phone number.",
+  "fleet.invite_no_account":
+    "No driver account is registered with this number. Ask them to sign up in the driver app first.",
+  "fleet.invite_duplicate": "This driver is already in your fleet or has a pending invitation.",
+  "fleet.invite_failed": "Couldn't send the invitation. Please try again.",
+  "fleet.invite_sent": "Invitation sent. The driver joins your fleet once they accept.",
+
+  // ── Driver details ──
+  "fleet.details_title": "Driver details",
+  "fleet.details_stale": "Couldn't refresh this driver. Showing the last loaded details.",
+  "fleet.phone": "Phone",
+  "fleet.vehicle": "Vehicle",
+  "fleet.plate": "Plate",
+  "fleet.rating": "Rating",
+  "fleet.rating_value": "{rating} ({count} ratings)",
+  "fleet.no_ratings": "No ratings yet",
+  "fleet.availability": "Availability",
+  "fleet.joined": "Joined",
+  "fleet.profile_note": "Name and vehicle details are managed by the driver in their own app.",
+  "fleet.status_label": "Assignment status",
+  "fleet.status_active_hint": "Can be assigned new orders.",
+  "fleet.status_inactive_hint": "Stays in your fleet but won't be assigned new orders.",
+  "fleet.updated": "Driver updated",
+  "fleet.update_failed": "Couldn't update the driver.",
+};

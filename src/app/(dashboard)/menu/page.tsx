@@ -1,1206 +1,726 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  Loader2,
-  Plus,
-  Edit2,
-  Trash2,
-  Settings,
-  Image as ImageIcon,
-  Sparkles,
-  UploadCloud,
-  Check,
-  AlertCircle,
-  FolderPlus,
-  Eye,
-} from "lucide-react";
-import { MenuService } from "@/services/api/menu";
-import { SettingsService } from "@/services/api/settings";
-import MenuItemModal from "./components/MenuItemModal";
-import OptionGroupsDrawer from "./components/OptionGroupsDrawer";
+import { AlertCircle, CalendarClock, Edit2, Eye, Plus, Search, Trash2, X } from "lucide-react";
+import { useFeedback } from "@/components/ui/Feedback";
+import MenuImporter from "@/components/menu/MenuImporter";
+import SortHandle, { beginRowDrag, moveInArray } from "@/components/menu/SortHandle";
+import { MenuService, type MenuItem, type MenuSection, type StockSchedule } from "@/services/api/menu";
+import { scheduleFor } from "@/lib/stock";
+import { orderSocket } from "@/lib/orderSocket";
+import { getApiErrorMessage, isApiStatus } from "@/services/api/errors";
 import { useI18n } from "@/lib/i18n";
+import { useRestaurant } from "@/lib/restaurantContext";
+import MenuItemModal from "./components/MenuItemModal";
+import MenuItemCard from "./components/MenuItemCard";
+import OptionGroupsDrawer from "./components/OptionGroupsDrawer";
+import SectionFormModal from "./components/SectionFormModal";
+import StockUntilModal from "./components/StockUntilModal";
 
-interface ParsedMenuData {
-  name: string;
-  type: "pdf" | "excel" | "image";
-  size: string;
-  categories: {
-    name: string;
-    items: {
-      name: string;
-      description?: string;
-      price: number;
-      image?: string;
-      isAvailable: boolean;
-      addons?: {
-        name: string;
-        price?: number;
-      }[];
-    }[];
-  }[];
+interface SectionWithItems extends MenuSection {
+  items: MenuItem[];
 }
+
+type DragRef = { kind: "section"; id: string } | { kind: "item"; id: string; sectionId: string };
+
+const byOrder = <T extends { sortOrder?: number }>(list: T[]) =>
+  list.slice().sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+
+/** Tagged with their section, which the list endpoint doesn't always echo. */
+const fetchSectionItems = async (sectionId: string) =>
+  byOrder(await MenuService.getItemsBySection(sectionId)).map((item) => ({ ...item, sectionId }));
+
+const matches = (text: string | null | undefined, query: string) =>
+  !!text && text.toLowerCase().includes(query);
 
 export default function MenuPage() {
   const { t } = useI18n();
-  const [restaurantId, setRestaurantId] = useState<string | null>(null);
-  const [sections, setSections] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { toast, confirm } = useFeedback();
+  const { restaurant } = useRestaurant();
+  const restaurantId = restaurant?.id ?? null;
 
-  // Section Modal State
-  const [isSectionModalOpen, setIsSectionModalOpen] = useState(false);
-  const [editingSection, setEditingSection] = useState<any>(null);
-  const [sectionForm, setSectionForm] = useState({ name: "", description: "" });
+  const [sections, setSections] = useState<SectionWithItems[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [loadError, setLoadError] = useState("");
+  const [search, setSearch] = useState("");
 
-  // Item Modal State
-  const [isItemModalOpen, setIsItemModalOpen] = useState(false);
-  const [activeSectionId, setActiveSectionId] = useState<string | null>(null);
-  const [editingItem, setEditingItem] = useState<any>(null);
-
-  // Option Groups Drawer State
-  const [isOptionGroupsOpen, setIsOptionGroupsOpen] = useState(false);
-  const [activeItemForOptions, setActiveItemForOptions] = useState<any>(null);
-
-  // AI Parsing states
-  const [geminiApiKey, setGeminiApiKey] = useState(() => {
-    if (typeof window !== "undefined") {
-      return window.localStorage.getItem("nowlny_gemini_key") || "";
-    }
-    return "";
+  const [sectionModal, setSectionModal] = useState<{ open: boolean; section: MenuSection | null }>({
+    open: false,
+    section: null,
   });
+  const [itemModal, setItemModal] = useState<{ open: boolean; sectionId: string; item: MenuItem | null }>({
+    open: false,
+    sectionId: "",
+    item: null,
+  });
+  const [optionsItem, setOptionsItem] = useState<MenuItem | null>(null);
+  const [stockPending, setStockPending] = useState<Set<string>>(() => new Set());
+  const [stockSchedules, setStockSchedules] = useState<StockSchedule[]>([]);
+  /** The dish whose "out of stock until…" dialog is open. */
+  const [stockUntilItem, setStockUntilItem] = useState<MenuItem | null>(null);
 
-  const handleUpdateApiKey = (key: string) => {
-    setGeminiApiKey(key);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("nowlny_gemini_key", key);
+  // ─── Loading ─────────────────────────────────────────────────────────────
+
+  const loadMenu = useCallback(async () => {
+    if (!restaurantId) return;
+    setLoadError("");
+    try {
+      const data = byOrder(await MenuService.getSectionsByRestaurant(restaurantId));
+      const withItems = await Promise.all(
+        data.map(async (section) => ({ ...section, items: await fetchSectionItems(section.id) })),
+      );
+      setSections(withItems);
+      setStatus("ready");
+      // Only labels the dishes: a failure here must not fail the menu.
+      MenuService.getStockSchedules(restaurantId)
+        .then(setStockSchedules)
+        .catch(() => setStockSchedules([]));
+    } catch (err: unknown) {
+      // A failed load must never read as "you have no sections" — that is how
+      // owners ended up re-creating a menu that was there all along.
+      setLoadError(getApiErrorMessage(err, ""));
+      setStatus("error");
     }
-  };
-
-  const [customFileName, setCustomFileName] = useState<string>("");
-  const [isParsing, setIsParsing] = useState(false);
-  const [isIntegrating, setIsIntegrating] = useState(false);
-  const [parsingStep, setParsingStep] = useState<string>("");
-  const [parseProgress, setParseProgress] = useState(0);
-  const [parsedData, setParsedData] = useState<ParsedMenuData | null>(null);
-  const [parseSuccess, setParseSuccess] = useState(false);
-  const [parsingError, setParsingError] = useState<string | null>(null);
-  const [lastUploadedFile, setLastUploadedFile] = useState<{
-    name: string;
-    base64Data: string;
-    fileMime: string;
-    fileSize: string;
-  } | null>(null);
+  }, [restaurantId]);
 
   useEffect(() => {
-    fetchData();
-  }, []);
+    const timer = window.setTimeout(() => void loadMenu(), 0);
+    return () => window.clearTimeout(timer);
+  }, [loadMenu]);
 
-  const fetchData = async () => {
+  /** One section's dishes again — when an API answer was too thin to patch from. */
+  const refreshSection = async (sectionId: string) => {
     try {
-      const profile = await SettingsService.getOwnRestaurant();
-      if (profile?.id) {
-        setRestaurantId(profile.id);
-        await fetchSections(profile.id);
-      }
-    } catch (err) {
-      console.error("Failed to fetch restaurant profile", err);
-    } finally {
-      setLoading(false);
+      const items = await fetchSectionItems(sectionId);
+      setSections((current) => current.map((s) => (s.id === sectionId ? { ...s, items } : s)));
+    } catch {
+      await loadMenu();
     }
   };
 
-  const fetchSections = async (restId: string) => {
-    try {
-      const data = await MenuService.getSectionsByRestaurant(restId);
-      // Fetch items for each section in parallel to display them inline
-      const sectionsWithItems = await Promise.all(
-        data.map(async (section: any) => {
-          const items = await MenuService.getItemsBySection(section.id);
-          return { ...section, items };
-        }),
-      );
-      setSections(sectionsWithItems);
-    } catch (err) {
-      console.error("Failed to fetch sections", err);
+  // ─── Sections ────────────────────────────────────────────────────────────
+
+  const handleSectionSaved = (saved: MenuSection | null) => {
+    if (!saved) {
+      void loadMenu();
+      return;
     }
-  };
-
-  const handleSaveSection = async () => {
-    if (!restaurantId) return;
-    try {
-      if (editingSection) {
-        await MenuService.updateSection(editingSection.id, sectionForm);
-      } else {
-        await MenuService.createSection({ ...sectionForm, restaurantId });
-      }
-      setIsSectionModalOpen(false);
-      setEditingSection(null);
-      fetchSections(restaurantId);
-    } catch (err) {
-      console.error("Failed to save section", err);
-    }
-  };
-
-  const handleDeleteSection = async (sectionId: string) => {
-    if (confirm(t("menu.confirm_delete_section"))) {
-      try {
-        await MenuService.deleteSection(sectionId);
-        if (restaurantId) fetchSections(restaurantId);
-      } catch (err) {
-        console.error("Failed to delete section", err);
-      }
-    }
-  };
-
-  const handleDeleteItem = async (itemId: string) => {
-    if (confirm(t("menu.confirm_delete_item"))) {
-      try {
-        await MenuService.deleteItem(itemId);
-        if (restaurantId) fetchSections(restaurantId);
-      } catch (err) {
-        console.error("Failed to delete item", err);
-      }
-    }
-  };
-
-  // Real Google Gemini 1.5 Flash API scanner
-  const runLiveGeminiScan = async (
-    fileName: string,
-    base64Data: string,
-    fileMime: string,
-    fileSize: string,
-  ) => {
-    setIsParsing(true);
-    setParseProgress(10);
-    setParsingStep(t("parser.step_connecting"));
-    setParsedData(null);
-    setParseSuccess(false);
-    setParsingError(null);
-
-    // Dynamic scanning progress steps simulator
-    let currentProgress = 10;
-    const progressInterval = setInterval(() => {
-      if (currentProgress < 95) {
-        currentProgress += Math.floor(Math.random() * 5) + 2;
-        setParseProgress(Math.min(95, currentProgress));
-
-        if (currentProgress > 25 && currentProgress <= 45) {
-          setParsingStep(t("parser.step_vision"));
-        } else if (currentProgress > 45 && currentProgress <= 70) {
-          setParsingStep(t("parser.step_ocr"));
-        } else if (currentProgress > 70) {
-          setParsingStep(t("parser.step_structuring"));
-        }
-      }
-    }, 300);
-
-    try {
-      const response = await fetch("/api/parse-menu", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          fileData: base64Data,
-          mimeType: fileMime,
-          customApiKey: geminiApiKey,
-        }),
-      });
-
-      clearInterval(progressInterval);
-
-      if (!response.ok) {
-        const errorBody = await response.json();
-        throw new Error(
-          errorBody.error || t("parser.scan_failed"),
-        );
-      }
-
-      const parsedResult = await response.json();
-
-      setParseProgress(100);
-      setParsingStep(t("parser.step_done"));
-
-      setTimeout(() => {
-        setIsParsing(false);
-        setParsedData({
-          name: fileName,
-          type: fileMime.includes("pdf")
-            ? "pdf"
-            : fileMime.includes("sheet") ||
-                fileMime.includes("excel") ||
-                fileMime.includes("csv")
-              ? "excel"
-              : "image",
-          size: fileSize,
-          categories: parsedResult.categories || [],
-        });
-        setParseSuccess(true);
-      }, 500);
-    } catch (err: any) {
-      clearInterval(progressInterval);
-      setIsParsing(false);
-
-      let friendlyMessage = err.message;
-      if (err.message.includes("Gemini API responded with error:")) {
-        try {
-          const jsonStartIndex = err.message.indexOf("{");
-          if (jsonStartIndex !== -1) {
-            const rawJson = err.message.substring(jsonStartIndex);
-            const errorObj = JSON.parse(rawJson);
-            if (errorObj?.error?.message) {
-              friendlyMessage = errorObj.error.message;
-            }
-          }
-        } catch (e) {}
-      }
-
-      setParsingError(friendlyMessage);
-    }
-  };
-
-  const handleRetryScan = async () => {
-    if (!lastUploadedFile) return;
-    await runLiveGeminiScan(
-      lastUploadedFile.name,
-      lastUploadedFile.base64Data,
-      lastUploadedFile.fileMime,
-      lastUploadedFile.fileSize,
+    setSections((current) =>
+      current.some((s) => s.id === saved.id)
+        ? current.map((s) => (s.id === saved.id ? { ...s, ...saved, items: s.items } : s))
+        : [...current, { ...saved, items: [] }],
     );
   };
 
-  const handleCustomFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      const mockSize = (file.size / (1024 * 1024)).toFixed(1) + " MB";
-
-      setCustomFileName(file.name);
-      setParsingError(null);
-
-      const reader = new FileReader();
-      reader.onload = async () => {
-        if (reader.result) {
-          const base64Data = (reader.result as string).split(",")[1];
-          setLastUploadedFile({
-            name: file.name,
-            base64Data,
-            fileMime: file.type || "image/png",
-            fileSize: mockSize,
-          });
-          await runLiveGeminiScan(
-            file.name,
-            base64Data,
-            file.type || "image/png",
-            mockSize,
-          );
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleApproveParsedMenu = async () => {
-    if (!parsedData || !restaurantId) return;
-
-    setIsIntegrating(true);
+  const handleDeleteSection = async (section: SectionWithItems) => {
+    const ok = await confirm({
+      title: t("menu.confirm_delete_section"),
+      message:
+        section.items.length > 0
+          ? t("menu.delete_section_with_items", { name: section.name, count: section.items.length })
+          : section.name,
+      danger: true,
+    });
+    if (!ok) return;
     try {
-      let currentSections = [...sections];
-
-      for (const parsedCat of parsedData.categories) {
-        let existingSec = currentSections.find(
-          (s) => s.name.toLowerCase() === parsedCat.name.toLowerCase(),
-        );
-        let sectionId = existingSec?.id;
-
-        if (!existingSec) {
-          try {
-            const newSec = await MenuService.createSection({
-              restaurantId,
-              name: parsedCat.name,
-              sortOrder: currentSections.length,
-            });
-            sectionId = newSec.id;
-            currentSections.push(newSec);
-          } catch (err: any) {
-            console.error(err);
-          }
-        }
-
-        if (!sectionId) continue;
-
-        for (const [idx, item] of parsedCat.items.entries()) {
-          try {
-            const newItem = await MenuService.createItem({
-              sectionId,
-              name: item.name,
-              description: item.description || "",
-              price: item.price || 0,
-              image: item.image,
-              isAvailable: item.isAvailable ?? true,
-              sortOrder: idx,
-            });
-
-            // Handle extracted addons by creating an Option Group
-            if (item.addons && Array.isArray(item.addons) && item.addons.length > 0) {
-              const optionGroup = await MenuService.createOptionGroup({
-                menuItemId: newItem.id,
-                name: t("parser.addons_group"),
-                type: "checkbox",
-                isRequired: false,
-              });
-
-              if (optionGroup && optionGroup.id) {
-                for (const addon of item.addons) {
-                  await MenuService.addOptionToGroup(optionGroup.id, {
-                    name: addon.name,
-                    price: addon.price || 0,
-                  });
-                }
-              }
-            }
-          } catch (err: any) {
-            console.error(err);
-          }
-        }
-      }
-
-      await fetchSections(restaurantId);
-
-      setParsedData(null);
-      setCustomFileName("");
-      setParseSuccess(false);
-      setLastUploadedFile(null);
-      alert(t("parser.integrated"));
-    } catch (err) {
-      console.error(err);
-      alert(t("parser.integrate_failed"));
-    } finally {
-      setIsIntegrating(false);
+      await MenuService.deleteSection(section.id);
+      setSections((current) => current.filter((s) => s.id !== section.id));
+      toast.success(t("menu.section_deleted"));
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, t("menu.delete_failed")));
     }
   };
+
+  // ─── Dishes ──────────────────────────────────────────────────────────────
+
+  const handleItemSaved = (saved: MenuItem | null, sectionId: string) => {
+    if (!saved?.id) {
+      void refreshSection(sectionId);
+      return;
+    }
+    setSections((current) =>
+      current.map((section) => {
+        if (section.id !== sectionId) return section;
+        const exists = section.items.some((item) => item.id === saved.id);
+        return {
+          ...section,
+          items: exists
+            ? section.items.map((item) => (item.id === saved.id ? { ...item, ...saved, sectionId } : item))
+            : [...section.items, { ...saved, sectionId }],
+        };
+      }),
+    );
+  };
+
+  const patchItem = (itemId: string, patch: Partial<MenuItem>) =>
+    setSections((current) =>
+      current.map((section) => ({
+        ...section,
+        items: section.items.map((item) => (item.id === itemId ? { ...item, ...patch } : item)),
+      })),
+    );
+
+  const handleDeleteItem = async (item: MenuItem, sectionId: string) => {
+    const ok = await confirm({ title: t("menu.confirm_delete_item"), message: item.name, danger: true });
+    if (!ok) return;
+    try {
+      await MenuService.deleteItem(item.id);
+      setSections((current) =>
+        current.map((s) => (s.id === sectionId ? { ...s, items: s.items.filter((i) => i.id !== item.id) } : s)),
+      );
+      toast.success(t("menu.item_deleted"));
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, t("menu.delete_failed")));
+    }
+  };
+
+  /** Optimistic: the switch flips at once and flips back if the API refuses. */
+  const handleToggleStock = async (item: MenuItem) => {
+    if (stockPending.has(item.id)) return;
+    const next = item.isAvailable === false;
+    patchItem(item.id, { isAvailable: next });
+    setStockPending((current) => new Set(current).add(item.id));
+    try {
+      const saved = await MenuService.setItemStock(item.id, { isAvailable: next });
+      // The stock endpoint resolves schedules, so its answer is the truth.
+      if (saved && typeof saved.isAvailable === "boolean") patchItem(item.id, { isAvailable: saved.isAvailable });
+    } catch (err: unknown) {
+      patchItem(item.id, { isAvailable: !next });
+      toast.error(
+        getApiErrorMessage(err, isApiStatus(err, 409) ? t("menu.stock_scheduled") : t("menu.stock_failed")),
+      );
+    } finally {
+      setStockPending((current) => {
+        const copy = new Set(current);
+        copy.delete(item.id);
+        return copy;
+      });
+    }
+  };
+
+  /** A one-off: out of stock until a time, back on its own. */
+  const handleStockUntil = async (item: MenuItem, until: Date): Promise<boolean> => {
+    try {
+      const saved = await MenuService.setItemStock(item.id, { isAvailable: false, until: until.toISOString() });
+      patchItem(item.id, saved ? { ...saved, id: item.id } : { isAvailable: false, outOfStockUntil: until.toISOString() });
+      return true;
+    } catch (err: unknown) {
+      // 409: the dish follows a schedule. The API says so in its own words.
+      toast.error(getApiErrorMessage(err, t("menu.stock_failed")));
+      return false;
+    }
+  };
+
+  // Live stock: a change from any device, a one-off lapsing or a schedule
+  // edge lands here without a refetch.
+  useEffect(
+    () =>
+      orderSocket.subscribeMenuStock(({ items }) => {
+        const byId = new Map(items.map((update) => [update.id, update]));
+        setSections((current) =>
+          current.map((section) => ({
+            ...section,
+            items: section.items.map((item) => {
+              const update = byId.get(item.id);
+              return update ? { ...item, ...update, sectionId: item.sectionId } : item;
+            }),
+          })),
+        );
+      }),
+    [],
+  );
+
+  // ─── Search ──────────────────────────────────────────────────────────────
+
+  const query = search.trim().toLowerCase();
+  const isFiltering = query !== "";
+  const visibleSections = useMemo(() => {
+    if (!isFiltering) return sections;
+    return sections
+      .map((section) =>
+        // A section whose own name matches shows all its dishes.
+        matches(section.name, query)
+          ? section
+          : {
+              ...section,
+              items: section.items.filter(
+                (item) => matches(item.name, query) || matches(item.description, query),
+              ),
+            },
+      )
+      .filter((section) => section.items.length > 0 || matches(section.name, query));
+  }, [sections, query, isFiltering]);
+
+  // ─── Drag-and-drop sorting ───────────────────────────────────────────────
+  //
+  // The rendered list is what gets sent as the new order, so sorting is only
+  // offered while that list is complete: a search hides rows, and the API
+  // rejects a partial `orderedIds`.
+  const canSortSections = !isFiltering && sections.length > 1;
+  const canSortItems = !isFiltering;
+  const sortBlockedHint = isFiltering ? t("menu.sort_blocked_search") : undefined;
+
+  // What is in flight is held in a ref *and* in state. The ref is what the
+  // drag handlers read: `dragstart` is not a discrete event, so a state update
+  // made there may not have rendered before the first `dragover` — and a
+  // `dragover` that never calls preventDefault() tells the browser this is not
+  // a drop zone. The state copy only paints the highlighting.
+  const draggingRef = useRef<DragRef | null>(null);
+  const [dragging, setDragging] = useState<DragRef | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+
+  const clearDrag = () => {
+    draggingRef.current = null;
+    setDragging(null);
+    setDropTargetId(null);
+  };
+
+  const startDrag = (e: React.DragEvent<HTMLSpanElement>, ref: DragRef) => {
+    beginRowDrag(e, ref.id);
+    draggingRef.current = ref;
+    setDragging(ref);
+  };
+
+  const moveSection = async (sectionId: string, toIndex: number) => {
+    const from = sections.findIndex((s) => s.id === sectionId);
+    if (from < 0 || toIndex < 0 || toIndex >= sections.length || from === toIndex) return;
+    const previous = sections;
+    const next = moveInArray(sections, from, toIndex);
+    setSections(next);
+    try {
+      await MenuService.reorderSections(next.map((s) => s.id));
+    } catch (err: unknown) {
+      setSections(previous); // the server still has the old order
+      toast.error(getApiErrorMessage(err, t("menu.sort_failed")));
+    }
+  };
+
+  const moveItem = async (sectionId: string, itemId: string, toIndex: number) => {
+    const section = sections.find((s) => s.id === sectionId);
+    if (!section) return;
+    const from = section.items.findIndex((i) => i.id === itemId);
+    if (from < 0 || toIndex < 0 || toIndex >= section.items.length || from === toIndex) return;
+    const previous = sections;
+    const nextItems = moveInArray(section.items, from, toIndex);
+    setSections(sections.map((s) => (s.id === sectionId ? { ...s, items: nextItems } : s)));
+    try {
+      await MenuService.reorderItems(sectionId, nextItems.map((i) => i.id));
+    } catch (err: unknown) {
+      setSections(previous);
+      toast.error(getApiErrorMessage(err, t("menu.sort_failed")));
+    }
+  };
+
+  /** Dropping a dish on another section re-parents it, then renumbers both. */
+  const moveItemToSection = async (itemId: string, fromId: string, toId: string, toIndex: number) => {
+    if (fromId === toId) return;
+    const source = sections.find((s) => s.id === fromId);
+    const target = sections.find((s) => s.id === toId);
+    const item = source?.items.find((i) => i.id === itemId);
+    if (!source || !target || !item) return;
+
+    const nextSource = source.items.filter((i) => i.id !== itemId);
+    const nextTarget = target.items.slice();
+    nextTarget.splice(Math.max(0, Math.min(toIndex, nextTarget.length)), 0, { ...item, sectionId: toId });
+    setSections(
+      sections.map((s) =>
+        s.id === fromId ? { ...s, items: nextSource } : s.id === toId ? { ...s, items: nextTarget } : s,
+      ),
+    );
+
+    try {
+      await MenuService.updateItem(itemId, { sectionId: toId });
+      await MenuService.reorderItems(toId, nextTarget.map((i) => i.id));
+      if (nextSource.length > 0) await MenuService.reorderItems(fromId, nextSource.map((i) => i.id));
+      toast.success(t("menu.item_moved", { name: item.name, section: target.name }));
+    } catch (err: unknown) {
+      toast.error(getApiErrorMessage(err, t("menu.sort_failed")));
+      // The re-parent may have landed before a reorder failed, so the
+      // optimistic state can't simply be rolled back — refetch the truth.
+      await loadMenu();
+    }
+  };
+
+  const sectionAccepts = (source: DragRef | null, sectionId: string) => {
+    if (!source) return false;
+    if (source.kind === "section") return canSortSections && source.id !== sectionId;
+    return canSortItems && source.sectionId !== sectionId;
+  };
+
+  const itemAccepts = (source: DragRef | null, itemId: string) =>
+    !!source && source.kind === "item" && canSortItems && source.id !== itemId;
+
+  const handleDropOnSection = (sectionId: string) => {
+    const source = draggingRef.current;
+    clearDrag();
+    if (!sectionAccepts(source, sectionId) || !source) return;
+    if (source.kind === "section") {
+      void moveSection(source.id, sections.findIndex((s) => s.id === sectionId));
+      return;
+    }
+    // A dish dropped on a section's header or empty space lands at the end.
+    const target = sections.find((s) => s.id === sectionId);
+    void moveItemToSection(source.id, source.sectionId, sectionId, target?.items.length ?? 0);
+  };
+
+  const handleDropOnItem = (targetId: string, targetSectionId: string) => {
+    const source = draggingRef.current;
+    clearDrag();
+    if (!source || !itemAccepts(source, targetId) || source.kind !== "item") return;
+    const toIndex = sections.find((s) => s.id === targetSectionId)?.items.findIndex((i) => i.id === targetId) ?? -1;
+    if (toIndex < 0) return;
+    if (source.sectionId === targetSectionId) void moveItem(targetSectionId, source.id, toIndex);
+    else void moveItemToSection(source.id, source.sectionId, targetSectionId, toIndex);
+  };
+
+  /** Which side of the row the drop line goes on. */
+  const dropSide = (list: { id: string }[], sourceId: string, targetId: string) => {
+    const from = list.findIndex((entry) => entry.id === sourceId);
+    const to = list.findIndex((entry) => entry.id === targetId);
+    // From another section, the dish is inserted *at* the target's index.
+    return from < 0 || from > to ? "drop-before" : "drop-after";
+  };
+
+  // ─── Render ──────────────────────────────────────────────────────────────
+
+  const openNewSection = () => setSectionModal({ open: true, section: null });
 
   return (
-    <div
-      className="animate-fade-in"
-      style={{ display: "flex", flexDirection: "column", gap: "32px" }}
-    >
-      <header
-        className="responsive-header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
+    <div className="animate-fade-in" style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+      <header className="page-header" style={{ marginBottom: 0 }}>
         <div>
-          <h1
-            style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}
-          >
-            {t("menu.title")}
-          </h1>
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("menu.subtitle")}
-          </p>
+          <h1 className="page-title">{t("menu.title")}</h1>
+          <p className="page-subtitle">{t("menu.subtitle")}</p>
         </div>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "12px",
-            flexWrap: "wrap",
-          }}
-        >
-          <Link className="btn-outline" href="/menu/preview">
-            <Eye size={20} /> {t("menu.customer_preview")}
+        <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+          <Link className="btn-outline" href="/menu/stock-schedules">
+            <CalendarClock size={20} aria-hidden /> {t("stock.schedules_title")}
           </Link>
-          <button
-            className="btn-primary"
-            onClick={() => {
-              setEditingSection(null);
-              setSectionForm({ name: "", description: "" });
-              setIsSectionModalOpen(true);
-            }}
-          >
-            <Plus size={20} /> {t("menu.add_section")}
+          <Link className="btn-outline" href="/menu/preview">
+            <Eye size={20} aria-hidden /> {t("menu.customer_preview")}
+          </Link>
+          <button type="button" className="btn-primary" onClick={openNewSection}>
+            <Plus size={20} aria-hidden /> {t("menu.add_section")}
           </button>
         </div>
       </header>
 
-      {/* AI MENU UPLOADER / PARSER SECTION */}
-      <div
-        className="responsive-flex-wrap"
-        style={{ display: "flex", gap: "24px", flexWrap: "wrap" }}
-      >
-        <div
-          className="glass-panel"
-          style={{
-            flex: parsedData ? "1 1 40%" : "1 1 100%",
-            padding: "24px",
-            transition: "all 0.3s ease",
-          }}
-        >
-          <div
-            className="responsive-header"
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "flex-start",
-              marginBottom: "24px",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-              <div
-                style={{
-                  padding: "12px",
-                  backgroundColor: "rgba(168, 85, 247, 0.1)",
-                  color: "#a855f7",
-                  borderRadius: "12px",
-                }}
-              >
-                <Sparkles size={24} className="animate-pulse" />
-              </div>
-              <div>
-                <h3 style={{ fontSize: "18px", fontWeight: "700" }}>
-                  {t("parser.title")}
-                </h3>
-                <p style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
-                  {t("parser.subtitle")}
-                </p>
-              </div>
-            </div>
-            <span
-              style={{
-                fontSize: "10px",
-                fontWeight: "800",
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                padding: "4px 8px",
-                backgroundColor: "rgba(168, 85, 247, 0.1)",
-                color: "#a855f7",
-                borderRadius: "4px",
-                border: "1px solid rgba(168, 85, 247, 0.2)",
-              }}
-              className="animate-pulse"
-            >
-              {t("parser.badge")}
-            </span>
-          </div>
+      {status === "ready" && (
+        <MenuImporter sections={sections} onImported={loadMenu} defaultOpen={sections.length === 0} />
+      )}
 
-          {parsingError && (
-            <div
-              style={{
-                padding: "16px",
-                backgroundColor: "rgba(239, 68, 68, 0.05)",
-                border: "1px solid rgba(239, 68, 68, 0.2)",
-                borderRadius: "12px",
-                marginBottom: "24px",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: "12px",
-                  color: "var(--error)",
-                }}
-              >
-                <AlertCircle size={20} />
-                <div>
-                  <p style={{ fontWeight: "700", marginBottom: "4px" }}>
-                    {t("parser.failure_title")}
-                  </p>
-                  <p
-                    style={{ fontSize: "14px", color: "var(--text-secondary)" }}
-                  >
-                    {parsingError}
-                  </p>
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: "12px", marginTop: "16px" }}>
-                {lastUploadedFile && (
-                  <button
-                    onClick={handleRetryScan}
-                    disabled={isParsing}
-                    className="btn-primary"
-                    style={{
-                      backgroundColor: "var(--error)",
-                      padding: "8px 16px",
-                      fontSize: "14px",
-                    }}
-                  >
-                    {isParsing && (
-                      <Loader2 size={16} className="animate-spin" />
-                    )}{" "}
-                    {t("parser.retry")}
-                  </button>
-                )}
-                <button
-                  onClick={() => setParsingError(null)}
-                  className="btn-outline"
-                  style={{ padding: "8px 16px", fontSize: "14px" }}
-                >
-                  {t("parser.dismiss")}
-                </button>
-              </div>
-            </div>
-          )}
-
-          <div
-            style={{
-              padding: "16px",
-              backgroundColor: "var(--bg-elevated)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "12px",
-              marginBottom: "24px",
-            }}
-          >
-            <p
-              style={{
-                fontSize: "12px",
-                fontWeight: "800",
-                textTransform: "uppercase",
-                letterSpacing: "1px",
-                marginBottom: "8px",
-              }}
-            >
-              {t("parser.credentials")}
-            </p>
-            <p
-              style={{
-                fontSize: "12px",
-                color: "var(--text-secondary)",
-                marginBottom: "16px",
-              }}
-            >
-              {t("parser.credentials_hint")}
-            </p>
-            <input
-              type="password"
-              placeholder={t("parser.api_key_placeholder")}
-              value={geminiApiKey}
-              onChange={(e) => handleUpdateApiKey(e.target.value)}
-              className="form-input"
-              style={{ marginBottom: "8px", padding: "10px 14px" }}
-            />
-            <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-              {t("parser.api_key_note_before")}
-              <code>GEMINI_API_KEY</code>
-              {t("parser.api_key_note_after")}
-            </p>
-          </div>
-
-          <label
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "40px",
-              border: "2px dashed var(--border-color)",
-              borderRadius: "16px",
-              backgroundColor: "var(--bg-surface)",
-              cursor: "pointer",
-              transition: "all 0.2s ease",
-              textAlign: "center",
-            }}
-            onMouseOver={(e) => (e.currentTarget.style.borderColor = "#a855f7")}
-            onMouseOut={(e) =>
-              (e.currentTarget.style.borderColor = "var(--border-color)")
-            }
-          >
-            <UploadCloud
-              size={48}
-              color="var(--text-muted)"
-              style={{ marginBottom: "16px" }}
-            />
-            <p style={{ fontWeight: "600", marginBottom: "4px" }}>
-              {t("parser.drop_title")}
-            </p>
-            <p
-              style={{
-                fontSize: "12px",
-                color: "var(--text-secondary)",
-                marginBottom: "16px",
-              }}
-            >
-              {t("parser.drop_hint")}
-            </p>
-            <div
-              className="btn-outline"
-              style={{ padding: "8px 16px", fontSize: "14px" }}
-            >
-              {t("parser.browse")}
-            </div>
-            <input
-              type="file"
-              accept=".pdf, .xlsx, .xls, .csv, .png, .jpg, .jpeg, .webp"
-              onChange={handleCustomFileUpload}
-              style={{ display: "none" }}
-            />
+      {status === "ready" && sections.length > 0 && (
+        <div style={{ position: "relative" }}>
+          <label htmlFor="menu-search" className="sr-only">
+            {t("menu.search_label")}
           </label>
-
-          {isParsing && (
-            <div
-              style={{
-                marginTop: "24px",
-                padding: "16px",
-                backgroundColor: "rgba(168, 85, 247, 0.05)",
-                border: "1px solid rgba(168, 85, 247, 0.2)",
-                borderRadius: "12px",
-                position: "relative",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                className="flex-col-mobile"
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: "14px",
-                  fontWeight: "600",
-                  color: "#a855f7",
-                  marginBottom: "12px",
-                }}
-              >
-                <span
-                  style={{ display: "flex", alignItems: "center", gap: "8px" }}
-                >
-                  <Loader2 size={16} className="animate-spin" /> {parsingStep}
-                </span>
-                <span>{parseProgress}%</span>
-              </div>
-              <div
-                style={{
-                  height: "6px",
-                  backgroundColor: "var(--bg-surface)",
-                  borderRadius: "4px",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    backgroundColor: "#a855f7",
-                    width: `${parseProgress}%`,
-                    transition: "width 0.3s ease",
-                  }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {parsedData && (
-          <div
-            className="glass-panel animate-fade-in"
+          <Search
+            size={18}
+            aria-hidden
             style={{
-              flex: "1 1 50%",
-              padding: "24px",
-              display: "flex",
-              flexDirection: "column",
+              position: "absolute",
+              insetInlineStart: "14px",
+              top: "50%",
+              transform: "translateY(-50%)",
+              color: "var(--text-muted)",
+              pointerEvents: "none",
             }}
-          >
-            <div
-              className="responsive-header"
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                borderBottom: "1px solid var(--border-color)",
-                paddingBottom: "16px",
-                marginBottom: "16px",
-              }}
-            >
-              <div
-                style={{ display: "flex", alignItems: "center", gap: "12px" }}
-              >
-                <div
-                  style={{
-                    padding: "8px",
-                    backgroundColor: "rgba(16, 185, 129, 0.1)",
-                    color: "var(--success)",
-                    borderRadius: "8px",
-                  }}
-                >
-                  <Check size={20} />
-                </div>
-                <div>
-                  <h3
-                    style={{
-                      fontSize: "16px",
-                      fontWeight: "700",
-                      textTransform: "uppercase",
-                      letterSpacing: "1px",
-                    }}
-                  >
-                    {t("parser.preview_title")}
-                  </h3>
-                  <p
-                    style={{ fontSize: "12px", color: "var(--text-secondary)" }}
-                  >
-                    {t("parser.source", { name: parsedData.name })}
-                  </p>
-                </div>
-              </div>
-              <span
-                style={{
-                  fontSize: "12px",
-                  fontWeight: "800",
-                  color: "var(--success)",
-                  backgroundColor: "rgba(16, 185, 129, 0.1)",
-                  padding: "4px 8px",
-                  borderRadius: "4px",
-                }}
-              >
-                {t("parser.confidence")}
-              </span>
-            </div>
-
-            <div
-              style={{
-                flex: 1,
-                overflowY: "auto",
-                maxHeight: "400px",
-                display: "flex",
-                flexDirection: "column",
-                gap: "16px",
-              }}
-            >
-              {parsedData.categories.map((cat, idx) => (
-                <div key={idx}>
-                  <h4
-                    style={{
-                      fontSize: "12px",
-                      fontWeight: "800",
-                      color: "#a855f7",
-                      textTransform: "uppercase",
-                      letterSpacing: "1px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      marginBottom: "12px",
-                    }}
-                  >
-                    <FolderPlus size={16} /> {t("parser.category", { name: cat.name })}
-                  </h4>
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: "8px",
-                    }}
-                  >
-                    {cat.items.map((item, i) => (
-                      <div
-                        key={i}
-                        className="flex-col-mobile"
-                        style={{
-                          padding: "12px",
-                          backgroundColor: "var(--bg-elevated)",
-                          border: "1px solid var(--border-color)",
-                          borderRadius: "8px",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "flex-start",
-                        }}
-                      >
-                        <div>
-                          <p style={{ fontWeight: "700", fontSize: "14px" }}>
-                            {item.name}
-                          </p>
-                          <p
-                            style={{
-                              fontSize: "12px",
-                              color: "var(--text-secondary)",
-                              marginTop: "4px",
-                            }}
-                          >
-                            {item.description}
-                          </p>
-                          {item.addons && item.addons.length > 0 && (
-                            <div style={{ marginTop: "8px" }}>
-                              <p style={{ fontSize: "12px", fontWeight: "600", color: "#a855f7", marginBottom: "4px" }}>{t("parser.addons")}</p>
-                              <ul style={{ fontSize: "11px", color: "var(--text-secondary)", paddingInlineStart: "16px", margin: 0 }}>
-                                {item.addons.map((addon, aIdx) => (
-                                  <li key={aIdx}>{addon.name} (+${addon.price?.toFixed(2) || "0.00"})</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                        <span
-                          style={{
-                            fontWeight: "800",
-                            color: "var(--accent-primary)",
-                            marginInlineStart: "12px",
-                          }}
-                        >
-                          ${item.price.toFixed(2)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div
-              className="flex-col-mobile"
-              style={{
-                display: "flex",
-                gap: "12px",
-                borderTop: "1px solid var(--border-color)",
-                paddingTop: "16px",
-                marginTop: "16px",
-              }}
-            >
-              <button
-                onClick={() => {
-                  setParsedData(null);
-                  setCustomFileName("");
-                }}
-                className="btn-outline"
-                style={{ flex: 1 }}
-                disabled={isIntegrating}
-              >
-                {t("parser.discard")}
-              </button>
-              <button
-                onClick={handleApproveParsedMenu}
-                className="btn-primary"
-                style={{ flex: 2, backgroundColor: "#a855f7", border: "none" }}
-                disabled={isIntegrating}
-              >
-                {isIntegrating ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : (
-                  <Check size={18} />
-                )}{" "}
-                {t("parser.approve")}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Section Form Inline */}
-      {isSectionModalOpen && (
-        <div
-          className="glass-panel"
-          style={{
-            padding: "24px",
-            backgroundColor: "var(--bg-elevated)",
-            marginBottom: "16px",
-          }}
-        >
-          <h3
-            style={{
-              fontSize: "18px",
-              fontWeight: "600",
-              marginBottom: "16px",
-            }}
-          >
-            {editingSection ? t("menu.edit_section") : t("menu.new_section")}
-          </h3>
-          <div
-            className="flex-col-mobile"
-            style={{ display: "flex", gap: "16px", marginBottom: "16px" }}
-          >
-            <input
-              type="text"
-              className="form-input"
-              placeholder={t("menu.section_name_placeholder")}
-              style={{ flex: 1 }}
-              value={sectionForm.name}
-              onChange={(e) =>
-                setSectionForm({ ...sectionForm, name: e.target.value })
-              }
-            />
-            <input
-              type="text"
-              className="form-input"
-              placeholder={t("menu.section_description_placeholder")}
-              style={{ flex: 2 }}
-              value={sectionForm.description}
-              onChange={(e) =>
-                setSectionForm({ ...sectionForm, description: e.target.value })
-              }
-            />
-          </div>
-          <div style={{ display: "flex", gap: "16px" }}>
-            <button className="btn-primary" onClick={handleSaveSection}>
-              {t("menu.save_section")}
-            </button>
+          />
+          <input
+            id="menu-search"
+            type="search"
+            className="form-input"
+            placeholder={t("menu.search_placeholder")}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{ paddingInlineStart: "42px", paddingInlineEnd: search ? "44px" : undefined }}
+          />
+          {search && (
             <button
-              className="btn-outline"
-              onClick={() => setIsSectionModalOpen(false)}
+              type="button"
+              className="icon-btn"
+              onClick={() => setSearch("")}
+              aria-label={t("menu.search_clear")}
+              style={{ position: "absolute", insetInlineEnd: "6px", top: "50%", transform: "translateY(-50%)" }}
             >
-              {t("common.cancel")}
+              <X size={16} />
             </button>
-          </div>
+          )}
         </div>
       )}
 
-      {loading ? (
-        <div
-          style={{ display: "flex", justifyContent: "center", padding: "40px" }}
-        >
-          <Loader2
-            className="animate-spin"
-            size={32}
-            color="var(--accent-primary)"
-          />
-        </div>
-      ) : sections.length === 0 ? (
-        <div
-          className="glass-panel"
-          style={{ padding: "40px", textAlign: "center" }}
-        >
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("menu.empty")}
-          </p>
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-          {sections.map((section: any) => (
-            <div
-              key={section.id}
-              className="glass-panel"
-              style={{ padding: "24px" }}
-            >
+      {status === "loading" ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }} aria-busy="true">
+          <span className="sr-only">{t("common.loading")}</span>
+          {[0, 1].map((i) => (
+            <div key={i} className="card" style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div className="skeleton" style={{ height: "24px", width: "40%" }} />
               <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  borderBottom: "1px solid var(--border-color)",
-                  paddingBottom: "16px",
-                  marginBottom: "16px",
-                }}
-              >
-                <div>
-                  <h3 style={{ fontSize: "20px", fontWeight: "600" }}>
-                    {section.name}
-                  </h3>
-                  {section.description && (
-                    <p
-                      style={{
-                        fontSize: "14px",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      {section.description}
-                    </p>
-                  )}
-                </div>
-                <div style={{ display: "flex", gap: "8px" }}>
-                  <button
-                    onClick={() => {
-                      setEditingSection(section);
-                      setSectionForm({
-                        name: section.name,
-                        description: section.description || "",
-                      });
-                      setIsSectionModalOpen(true);
-                    }}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "var(--text-secondary)",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
-                    }}
-                  >
-                    <Edit2 size={16} /> {t("common.edit")}
-                  </button>
-                  <button
-                    onClick={() => handleDeleteSection(section.id)}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      color: "var(--error)",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "4px",
-                    }}
-                  >
-                    <Trash2 size={16} /> {t("common.delete")}
-                  </button>
-                </div>
-              </div>
-
-              <div
-                className="responsive-grid-2"
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))",
                   gap: "16px",
-                  marginBottom: "16px",
                 }}
               >
-                {(section.items || []).map((item: any) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      border: "1px solid var(--border-color)",
-                      borderRadius: "12px",
-                      padding: "16px",
-                      display: "flex",
-                      gap: "16px",
-                      backgroundColor: "var(--bg-elevated)",
-                    }}
-                  >
-                    {item.image ? (
-                      <img
-                        src={item.image}
-                        alt={item.name}
-                        style={{
-                          width: "80px",
-                          height: "80px",
-                          objectFit: "cover",
-                          borderRadius: "8px",
-                        }}
-                      />
-                    ) : (
-                      <div
-                        style={{
-                          width: "80px",
-                          height: "80px",
-                          backgroundColor: "var(--bg-surface)",
-                          borderRadius: "8px",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          color: "var(--text-muted)",
-                        }}
-                      >
-                        <ImageIcon size={24} />
-                      </div>
-                    )}
-                    <div style={{ flex: 1 }}>
-                      <h4 style={{ fontWeight: "600", marginBottom: "4px" }}>
-                        {item.name}
-                      </h4>
-                      <p
-                        style={{
-                          color: "var(--text-secondary)",
-                          fontSize: "14px",
-                          marginBottom: "8px",
-                          display: "-webkit-box",
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: "vertical",
-                          overflow: "hidden",
-                        }}
-                      >
-                        {item.description}
-                      </p>
-                      <div
-                        style={{
-                          fontWeight: "600",
-                          color: "var(--accent-primary)",
-                        }}
-                      >
-                        ${item.price}
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: "8px",
-                          marginTop: "12px",
-                          flexWrap: "wrap",
-                        }}
-                      >
-                        <button
-                          onClick={() => {
-                            setActiveSectionId(section.id);
-                            setEditingItem(item);
-                            setIsItemModalOpen(true);
-                          }}
-                          className="btn-outline"
-                          style={{
-                            padding: "4px 8px",
-                            fontSize: "12px",
-                            flex: 1,
-                            justifyContent: "center",
-                          }}
-                        >
-                          {t("common.edit")}
-                        </button>
-                        <button
-                          onClick={() => {
-                            setActiveItemForOptions(item);
-                            setIsOptionGroupsOpen(true);
-                          }}
-                          className="btn-outline"
-                          style={{
-                            padding: "4px 8px",
-                            fontSize: "12px",
-                            flex: 1,
-                            justifyContent: "center",
-                          }}
-                        >
-                          {t("menu.options")}
-                        </button>
-                        <button
-                          onClick={() => handleDeleteItem(item.id)}
-                          className="btn-outline"
-                          style={{
-                            padding: "4px 8px",
-                            fontSize: "12px",
-                            flex: "0 0 auto",
-                            color: "var(--error)",
-                            borderColor: "var(--error)",
-                          }}
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+                {[0, 1, 2].map((j) => (
+                  <div key={j} className="skeleton" style={{ height: "112px" }} />
                 ))}
               </div>
-
-              <button
-                onClick={() => {
-                  setActiveSectionId(section.id);
-                  setEditingItem(null);
-                  setIsItemModalOpen(true);
-                }}
-                className="btn-outline"
-                style={{
-                  width: "100%",
-                  justifyContent: "center",
-                  borderStyle: "dashed",
-                }}
-              >
-                <Plus size={18} /> {t("menu.add_item_to", { section: section.name })}
-              </button>
             </div>
           ))}
         </div>
+      ) : status === "error" ? (
+        <div className="notice notice-error" role="alert" style={{ flexDirection: "column", padding: "20px" }}>
+          <div style={{ display: "flex", gap: "10px" }}>
+            <AlertCircle size={20} style={{ flexShrink: 0 }} />
+            <div>
+              <p style={{ margin: 0, fontWeight: 700 }}>{t("menu.load_failed")}</p>
+              {loadError && <p style={{ margin: 0, color: "var(--text-secondary)" }}>{loadError}</p>}
+            </div>
+          </div>
+          <button
+            type="button"
+            className="btn-outline btn-sm"
+            onClick={() => {
+              setStatus("loading");
+              void loadMenu();
+            }}
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      ) : sections.length === 0 ? (
+        <div className="empty-state">
+          <h3>{t("menu.empty_title")}</h3>
+          <p>{t("menu.empty")}</p>
+          <button type="button" className="btn-primary" onClick={openNewSection}>
+            <Plus size={18} aria-hidden /> {t("menu.add_section")}
+          </button>
+        </div>
+      ) : visibleSections.length === 0 ? (
+        <div className="empty-state">
+          <p>{t("menu.search_empty", { query: search.trim() })}</p>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+          {visibleSections.map((section) => {
+            const isSectionDragged = dragging?.kind === "section" && dragging.id === section.id;
+            const isSectionTarget = dropTargetId === section.id && sectionAccepts(dragging, section.id);
+            const sectionDropClass =
+              isSectionTarget && dragging?.kind === "section" ? dropSide(sections, dragging.id, section.id) : "";
+
+            return (
+              <section
+                key={section.id}
+                data-drag-card
+                aria-label={section.name}
+                className={["card", isSectionDragged ? "is-dragging" : "", sectionDropClass].join(" ")}
+                onDragOver={(e) => {
+                  if (!sectionAccepts(draggingRef.current, section.id)) return;
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  setDropTargetId(section.id);
+                }}
+                onDragLeave={(e) => {
+                  // Leaving into a child (a dish card) is not leaving the section.
+                  if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                  setDropTargetId((prev) => (prev === section.id ? null : prev));
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  handleDropOnSection(section.id);
+                }}
+                style={{
+                  padding: "20px",
+                  outline:
+                    isSectionTarget && dragging?.kind === "item" ? "2px dashed var(--accent-primary)" : undefined,
+                  outlineOffset: "4px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    borderBottom: "1px solid var(--border-color)",
+                    paddingBottom: "14px",
+                    marginBottom: "16px",
+                  }}
+                >
+                  <SortHandle
+                    label={section.name}
+                    disabled={!canSortSections}
+                    disabledHint={sortBlockedHint}
+                    onDragStart={(e) => startDrag(e, { kind: "section", id: section.id })}
+                    onDragEnd={clearDrag}
+                    onMove={(delta) =>
+                      void moveSection(section.id, sections.findIndex((s) => s.id === section.id) + delta)
+                    }
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                      <h2 style={{ fontSize: "20px", fontWeight: 600, margin: 0, overflowWrap: "anywhere" }}>
+                        {section.name}
+                      </h2>
+                      <span className="badge">{section.items.length}</span>
+                      {section.isActive === false && <span className="badge badge-warning">{t("menu.badge_hidden")}</span>}
+                    </div>
+                    {section.description && (
+                      <p style={{ fontSize: "14px", color: "var(--text-secondary)", margin: "2px 0 0" }}>
+                        {section.description}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setSectionModal({ open: true, section })}
+                    aria-label={t("menu.edit_section_aria", { name: section.name })}
+                    title={t("common.edit")}
+                  >
+                    <Edit2 size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn icon-btn-danger"
+                    onClick={() => void handleDeleteSection(sections.find((s) => s.id === section.id) ?? section)}
+                    aria-label={t("menu.delete_section_aria", { name: section.name })}
+                    title={t("common.delete")}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+
+                {section.items.length === 0 ? (
+                  <p style={{ color: "var(--text-secondary)", fontSize: "14px", margin: "0 0 16px" }}>
+                    {t("menu.section_empty")}
+                  </p>
+                ) : (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 300px), 1fr))",
+                      gap: "12px",
+                      marginBottom: "16px",
+                    }}
+                  >
+                    {section.items.map((item) => {
+                      const isItemDragged = dragging?.kind === "item" && dragging.id === item.id;
+                      const isItemTarget = dropTargetId === item.id && itemAccepts(dragging, item.id);
+                      return (
+                        <MenuItemCard
+                          key={item.id}
+                          item={item}
+                          sortDisabled={!canSortItems}
+                          sortDisabledHint={sortBlockedHint}
+                          dragClassName={[
+                            isItemDragged ? "is-dragging" : "",
+                            isItemTarget && dragging ? dropSide(section.items, dragging.id, item.id) : "",
+                          ].join(" ")}
+                          stockPending={stockPending.has(item.id)}
+                          onEdit={() => setItemModal({ open: true, sectionId: section.id, item })}
+                          onOptions={() => setOptionsItem(item)}
+                          onDelete={() => void handleDeleteItem(item, section.id)}
+                          onToggleStock={() => void handleToggleStock(item)}
+                          onStockUntil={() => setStockUntilItem(item)}
+                          schedule={scheduleFor(item, section, stockSchedules)}
+                          onDragStart={(e) => startDrag(e, { kind: "item", id: item.id, sectionId: section.id })}
+                          onDragEnd={clearDrag}
+                          onMove={(delta) =>
+                            void moveItem(
+                              section.id,
+                              item.id,
+                              section.items.findIndex((i) => i.id === item.id) + delta,
+                            )
+                          }
+                          dropHandlers={{
+                            onDragOver: (e) => {
+                              if (!itemAccepts(draggingRef.current, item.id)) return;
+                              // Without this the section also claims the drop
+                              // and the dish lands at the end instead.
+                              e.preventDefault();
+                              e.stopPropagation();
+                              e.dataTransfer.dropEffect = "move";
+                              setDropTargetId(item.id);
+                            },
+                            onDragLeave: () => setDropTargetId((prev) => (prev === item.id ? null : prev)),
+                            onDrop: (e) => {
+                              if (!itemAccepts(draggingRef.current, item.id)) return;
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleDropOnItem(item.id, section.id);
+                            },
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setItemModal({ open: true, sectionId: section.id, item: null })}
+                  className="btn-outline"
+                  style={{ width: "100%", borderStyle: "dashed" }}
+                >
+                  <Plus size={18} aria-hidden /> {t("menu.add_item_to", { section: section.name })}
+                </button>
+              </section>
+            );
+          })}
+          {!isFiltering && (sections.length > 1 || sections.some((s) => s.items.length > 1)) && (
+            <p className="field-hint" style={{ textAlign: "center" }}>
+              {t("menu.sort_hint")}
+            </p>
+          )}
+        </div>
       )}
 
-      {activeSectionId && (
-        <MenuItemModal
-          isOpen={isItemModalOpen}
-          onClose={() => setIsItemModalOpen(false)}
-          sectionId={activeSectionId}
-          item={editingItem}
-          onSave={() => restaurantId && fetchSections(restaurantId)}
+      {/* Mounted per open, so each form starts from the row it was opened for. */}
+      {sectionModal.open && (
+        <SectionFormModal
+          open
+          section={sectionModal.section}
+          nextSortOrder={sections.length}
+          onClose={() => setSectionModal({ open: false, section: null })}
+          onSaved={handleSectionSaved}
+          schedules={stockSchedules}
+          onStockChanged={(sectionId) => void refreshSection(sectionId)}
         />
       )}
 
-      {activeItemForOptions && (
+      {itemModal.open && (
+        <MenuItemModal
+          isOpen
+          onClose={() => setItemModal({ open: false, sectionId: "", item: null })}
+          sectionId={itemModal.sectionId}
+          item={itemModal.item}
+          nextSortOrder={sections.find((s) => s.id === itemModal.sectionId)?.items.length ?? 0}
+          onSaved={handleItemSaved}
+          schedules={stockSchedules}
+          sectionSchedule={stockSchedules.find(
+            (s) => s.id === sections.find((section) => section.id === itemModal.sectionId)?.stockScheduleId,
+          )}
+        />
+      )}
+
+      {stockUntilItem && (
+        <StockUntilModal
+          key={stockUntilItem.id}
+          item={stockUntilItem}
+          onClose={() => setStockUntilItem(null)}
+          onSubmit={(until) => handleStockUntil(stockUntilItem, until)}
+        />
+      )}
+
+      {optionsItem && (
         <OptionGroupsDrawer
-          isOpen={isOptionGroupsOpen}
-          onClose={() => setIsOptionGroupsOpen(false)}
-          itemId={activeItemForOptions.id}
-          itemName={activeItemForOptions.name}
+          key={optionsItem.id}
+          isOpen
+          onClose={() => setOptionsItem(null)}
+          itemId={optionsItem.id}
+          itemName={optionsItem.name}
         />
       )}
     </div>

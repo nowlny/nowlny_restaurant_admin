@@ -1,0 +1,379 @@
+/* Shared by the stories and reels screens: the portrait card grid and the
+   upload tiles in their editors. Overlays sit on photos/video, so they use the
+   scrim token and plain white text in both themes. */
+
+/* ── Card grid ─────────────────────────────────────────────────────────── */
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 20px;
+}
+
+/* Two portrait cards side by side on a phone read like the apps' own story
+   rows; one full-width 9:16 card would be taller than the screen. */
+@media (max-width: 480px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+}
+
+.card {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.frame {
+  position: relative;
+  aspect-ratio: 9 / 16;
+  overflow: hidden;
+  background: var(--bg-elevated);
+}
+
+.frame > img,
+.frame > video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.frameEmpty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.overlay {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 10px;
+  background: linear-gradient(rgba(0, 0, 0, 0.5), transparent);
+  pointer-events: none;
+}
+
+.overlay > * {
+  pointer-events: auto;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 999px;
+  background: var(--scrim);
+  color: white;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+button.chip {
+  cursor: pointer;
+}
+
+button.chip:hover {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+button.chip:focus-visible,
+.replace:focus-visible {
+  outline: 2px solid white;
+  outline-offset: 2px;
+}
+
+.chipDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.chipDotMuted {
+  background: var(--text-muted);
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+}
+
+.caption {
+  margin: 0;
+  min-height: 2.9em;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.captionMuted {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.actions > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (max-width: 480px) {
+  .body {
+    gap: 8px;
+    padding: 10px;
+  }
+  .caption {
+    font-size: 13px;
+  }
+  .actions > :first-child {
+    padding-inline: 8px;
+  }
+}
+
+/* ── Editors: upload tiles, previews, link import ──────────────────────── */
+
+.uploadGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 560px) {
+  .uploadGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.labelRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.required {
+  color: var(--error);
+}
+
+.optional {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.tile {
+  width: 100%;
+  height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  border: 2px dashed var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.tile:hover:not(:disabled),
+.tileActive {
+  border-color: var(--accent-primary);
+  background: var(--accent-light);
+}
+
+.tile:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+  border-color: var(--accent-primary);
+}
+
+.tile:disabled {
+  cursor: default;
+}
+
+.tileIcon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-light);
+  color: var(--accent-primary);
+}
+
+.tileTitle {
+  display: block;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tileHint {
+  font-size: 13px;
+}
+
+.progress {
+  width: 70%;
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--border-color);
+}
+
+.progress > span {
+  display: block;
+  height: 100%;
+  background: var(--accent-primary);
+  transition: width 0.2s ease;
+}
+
+.preview {
+  position: relative;
+  height: 220px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
+}
+
+.preview > img,
+.preview > video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* The busy layer over a preview whose file is being replaced. */
+.previewBusy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: var(--scrim);
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.previewBusy .progress {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.replace {
+  position: absolute;
+  inset-block-start: 10px;
+  inset-inline-end: 10px;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 999px;
+  background: var(--scrim);
+  color: white;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.replace:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.75);
+}
+
+.replace:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+@media (max-width: 560px) {
+  .tile,
+  .preview {
+    height: 180px;
+  }
+}
+
+.linkRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.linkInput {
+  position: relative;
+  flex: 1 1 220px;
+  min-width: 0;
+}
+
+.linkInput > svg {
+  position: absolute;
+  inset-inline-start: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.linkInput > input {
+  padding-inline-start: 42px;
+}
+
+.linkInput > input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.linkRow > button {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 480px) {
+  .linkRow > button {
+    flex: 1 1 100%;
+  }
+}
+
+.hintError {
+  color: var(--error);
+}
+
+.counter {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: end;
+}

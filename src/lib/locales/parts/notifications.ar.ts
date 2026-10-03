@@ -1,0 +1,26 @@
+import type { notificationsEn } from "./notifications.en";
+
+export const notificationsAr: Record<keyof typeof notificationsEn, string> = {
+  "notifications.title": "الإشعارات",
+  "notifications.subtitle": "تحديثات الطلبات والرسائل من Nowlny.",
+  "notifications.unread_count": "{count} غير مقروء",
+  "notifications.all_caught_up": "لا يوجد ما لم تقرأه.",
+  "notifications.mark_all_read": "تعليم الكل كمقروء",
+  "notifications.all_marked_read": "تم تعليم كل الإشعارات كمقروءة",
+  "notifications.mark_all_failed": "تعذّر تعليم الإشعارات كمقروءة.",
+  "notifications.mark_failed": "تعذّر تعليم هذا الإشعار كمقروء.",
+  "notifications.filter_label": "عرض",
+  "notifications.filter_all": "الكل",
+  "notifications.filter_unread": "غير المقروءة",
+  "notifications.load_failed": "تعذّر تحميل الإشعارات.",
+  "notifications.load_more": "تحميل المزيد",
+  "notifications.load_more_failed": "تعذّر تحميل المزيد من الإشعارات.",
+  "notifications.empty_title": "لا توجد إشعارات بعد",
+  "notifications.empty_body": "سنُعلمك عندما يحدث شيء مهم.",
+  "notifications.empty_unread_title": "لا يوجد غير مقروء",
+  "notifications.empty_unread_body": "لقد قرأت كل الإشعارات.",
+  "notifications.unread": "غير مقروء",
+  "notifications.view_order": "عرض الطلب",
+  "notifications.untitled": "إشعار",
+  "notifications.just_now": "الآن",
+};

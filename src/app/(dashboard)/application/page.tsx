@@ -4,11 +4,11 @@ import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
-  CheckCircle2,
   Clock3,
   Loader2,
   RefreshCw,
   Store,
+  XCircle,
 } from "lucide-react";
 import { getApiErrorMessage } from "@/services/api/errors";
 import {
@@ -17,6 +17,8 @@ import {
   restaurantsService,
 } from "@/services/api/restaurants";
 import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
+import { Busy, useFeedback } from "@/components/ui/Feedback";
+import { Field, Notice as NoticeBanner } from "@/components/settings/FormBits";
 
 /** Key + optional server text — the load effect must not close over `t`. */
 type Notice = { key: MessageKey; text?: string } | null;
@@ -36,14 +38,15 @@ const EMPTY_FORM: ApplicationForm = {
 export default function ApplicationPage() {
   const router = useRouter();
   const { t, locale } = useI18n();
+  const { toast, confirm } = useFeedback();
   const [submission, setSubmission] = useState<RestaurantSubmission | null>(null);
   const [submissionCount, setSubmissionCount] = useState(0);
   const [currencies, setCurrencies] = useState<Currency[]>([]);
   const [form, setForm] = useState<ApplicationForm>(EMPTY_FORM);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState<Notice>(null);
-  const [success, setSuccess] = useState<Notice>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -94,7 +97,6 @@ export default function ApplicationPage() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
-    setSuccess(null);
 
     if (!form.restaurantName.trim() || !form.currencyId) {
       setError({ key: "application.required" });
@@ -106,18 +108,18 @@ export default function ApplicationPage() {
       let updatedSubmission: RestaurantSubmission;
       if (submission?.status === "pending") {
         updatedSubmission = await restaurantsService.updateMySubmission({
-          name: form.restaurantName.trim(),
+          restaurantName: form.restaurantName.trim(),
           description: form.description.trim(),
           currencyId: form.currencyId,
         });
-        setSuccess({ key: "application.updated" });
+        toast.success(t("application.updated"));
       } else {
         updatedSubmission = await restaurantsService.submitApplication({
           restaurantName: form.restaurantName.trim(),
           description: form.description.trim() || undefined,
           currencyId: form.currencyId,
         });
-        setSuccess({ key: "application.submitted" });
+        toast.success(t("application.submitted"));
       }
       setSubmission(updatedSubmission);
     } catch (saveError: unknown) {
@@ -130,6 +132,27 @@ export default function ApplicationPage() {
     }
   };
 
+  const handleCancel = async () => {
+    const confirmed = await confirm({
+      title: t("appx.cancel_title"),
+      message: t("appx.cancel_body"),
+      confirmLabel: t("appx.cancel_confirm"),
+      cancelLabel: t("appx.keep"),
+      danger: true,
+    });
+    if (!confirmed) return;
+    setError(null);
+    setCancelling(true);
+    try {
+      setSubmission(await restaurantsService.cancelMySubmission());
+      toast.success(t("appx.cancelled"));
+    } catch (cancelError: unknown) {
+      setError({ key: "appx.cancel_failed", text: getApiErrorMessage(cancelError, "") });
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ minHeight: "420px", display: "grid", placeItems: "center" }}>
@@ -139,7 +162,6 @@ export default function ApplicationPage() {
   }
 
   const errorText = error ? error.text || t(error.key) : "";
-  const successText = success ? success.text || t(success.key) : "";
   const isPending = submission?.status === "pending";
   const isRejected = submission?.status === "rejected";
   const isCancelled = submission?.status === "cancelled";
@@ -156,7 +178,7 @@ export default function ApplicationPage() {
         gap: "24px",
       }}
     >
-      <section className="glass-panel" style={{ padding: "28px" }}>
+      <section className="glass-panel" style={{ padding: "clamp(18px, 5vw, 28px)" }}>
         <div style={{ display: "flex", gap: "16px", alignItems: "flex-start" }}>
           <div
             style={{
@@ -166,15 +188,13 @@ export default function ApplicationPage() {
               display: "grid",
               placeItems: "center",
               color: isRejected ? "var(--error)" : "var(--warning)",
-              background: isRejected
-                ? "rgba(239, 68, 68, 0.1)"
-                : "rgba(245, 158, 11, 0.1)",
+              background: isRejected ? "var(--error-bg)" : "var(--warning-bg)",
               flexShrink: 0,
             }}
           >
             {isRejected ? <AlertCircle size={27} /> : isCancelled ? <Store size={27} /> : <Clock3 size={27} />}
           </div>
-          <div style={{ flex: 1 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <p
               style={{
                 margin: "0 0 6px",
@@ -187,7 +207,7 @@ export default function ApplicationPage() {
             >
               {t("application.eyebrow")}
             </p>
-            <h1 style={{ margin: "0 0 10px", fontSize: "28px" }}>
+            <h1 style={{ margin: "0 0 10px", fontSize: "clamp(22px, 5vw, 28px)" }}>
               {isPending
                 ? t("application.title_pending")
                 : isRejected
@@ -205,50 +225,26 @@ export default function ApplicationPage() {
         </div>
 
         {isRejected && submission.rejectionReason && (
-          <div
-            role="alert"
-            style={{
-              marginTop: "20px",
-              padding: "14px 16px",
-              borderRadius: "12px",
-              color: "var(--error)",
-              background: "rgba(239, 68, 68, 0.08)",
-              border: "1px solid rgba(239, 68, 68, 0.2)",
-            }}
-          >
-            <strong>{t("application.review_note")}</strong> {submission.rejectionReason}
+          <div style={{ marginTop: "20px" }}>
+            <NoticeBanner tone="error">
+              <strong>{t("application.review_note")}</strong> {submission.rejectionReason}
+            </NoticeBanner>
           </div>
         )}
       </section>
 
-      <section className="glass-panel" style={{ padding: "28px" }}>
+      <section className="glass-panel" style={{ padding: "clamp(18px, 5vw, 28px)" }}>
         {errorText && (
-          <div role="alert" style={{ marginBottom: "20px", color: "var(--error)" }}>
-            {errorText}
-          </div>
-        )}
-        {successText && (
-          <div
-            role="status"
-            style={{
-              marginBottom: "20px",
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-              color: "var(--success)",
-            }}
-          >
-            <CheckCircle2 size={18} /> {successText}
+          <div style={{ marginBottom: "20px" }}>
+            <NoticeBanner tone="error">{errorText}</NoticeBanner>
           </div>
         )}
 
         <form onSubmit={handleSubmit} style={{ display: "grid", gap: "20px" }}>
-          <div style={{ display: "grid", gap: "8px" }}>
-            <label htmlFor="application-name" style={{ fontWeight: 600 }}>
-              {t("application.name")}
-            </label>
+          <Field label={t("application.name")}>
+            {(id) => (
             <input
-              id="application-name"
+              id={id}
               className="form-input"
               value={form.restaurantName}
               onChange={(event) =>
@@ -256,14 +252,13 @@ export default function ApplicationPage() {
               }
               required
             />
-          </div>
+            )}
+          </Field>
 
-          <div style={{ display: "grid", gap: "8px" }}>
-            <label htmlFor="application-description" style={{ fontWeight: 600 }}>
-              {t("application.description")}
-            </label>
+          <Field label={t("application.description")}>
+            {(id) => (
             <textarea
-              id="application-description"
+              id={id}
               className="form-input"
               rows={4}
               value={form.description}
@@ -272,14 +267,13 @@ export default function ApplicationPage() {
               }
               placeholder={t("application.description_placeholder")}
             />
-          </div>
+            )}
+          </Field>
 
-          <div style={{ display: "grid", gap: "8px" }}>
-            <label htmlFor="application-currency" style={{ fontWeight: 600 }}>
-              {t("application.currency")}
-            </label>
+          <Field label={t("application.currency")}>
+            {(id) => (
             <select
-              id="application-currency"
+              id={id}
               className="form-input"
               value={form.currencyId}
               onChange={(event) =>
@@ -296,7 +290,8 @@ export default function ApplicationPage() {
                 </option>
               ))}
             </select>
-          </div>
+            )}
+          </Field>
 
           <div
             style={{
@@ -319,10 +314,26 @@ export default function ApplicationPage() {
                     })
                   : t("application.will_be_reviewed")}
             </span>
-            <button className="btn-primary" type="submit" disabled={saving || currencies.length === 0}>
-              {saving ? <Loader2 className="animate-spin" size={18} /> : isPending ? <RefreshCw size={18} /> : <Store size={18} />}
-              {isPending ? t("application.save_changes") : t("application.submit")}
-            </button>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              {isPending && (
+                <button
+                  type="button"
+                  className="btn-outline"
+                  onClick={handleCancel}
+                  disabled={cancelling || saving}
+                  style={{ color: "var(--error)" }}
+                >
+                  <Busy busy={cancelling} label={<><XCircle size={18} /> {t("appx.cancel")}</>} />
+                </button>
+              )}
+              <button className="btn-primary" type="submit" disabled={saving || cancelling || currencies.length === 0}>
+                <Busy
+                  busy={saving}
+                  label={<>{isPending ? <RefreshCw size={18} /> : <Store size={18} />} {isPending ? t("application.save_changes") : t("application.submit")}</>}
+                  busyLabel={t("common.saving")}
+                />
+              </button>
+            </div>
           </div>
         </form>
       </section>

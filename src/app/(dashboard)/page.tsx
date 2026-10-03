@@ -1,24 +1,26 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Store,
-  TrendingUp,
-  Clock,
   AlertCircle,
-  ShoppingBag,
   DollarSign,
-  Users,
-  Star,
-  ArrowUpRight,
-  Calendar,
   RefreshCw,
+  ShoppingBag,
+  Star,
+  TrendingUp,
+  Users,
 } from "lucide-react";
-import { apiClient } from "@/services/api/client";
 import { OrdersService } from "@/services/api/orders";
+import { useRestaurant } from "@/lib/restaurantContext";
+import { formatMoney } from "@/lib/money";
 import { intlLocale, useI18n, type MessageKey } from "@/lib/i18n";
+import StatCard from "@/components/home/StatCard";
+import PerformanceChart, { parseDay, weekdayLabel, type DailyPoint } from "@/components/home/PerformanceChart";
+import styles from "@/components/home/home.module.css";
 
-const PERIODS: { value: string; labelKey: MessageKey }[] = [
+type Period = "today" | "week" | "month" | "year" | "all";
+
+const PERIODS: { value: Period; labelKey: MessageKey }[] = [
   { value: "today", labelKey: "dashboard.period.today" },
   { value: "week", labelKey: "dashboard.period.week" },
   { value: "month", labelKey: "dashboard.period.month" },
@@ -26,238 +28,147 @@ const PERIODS: { value: string; labelKey: MessageKey }[] = [
   { value: "all", labelKey: "dashboard.period.all" },
 ];
 
+/** `GET /orders/restaurant/me/statistics` (RestaurantStatisticsResponseDto). */
+interface Statistics {
+  totalOrders: number;
+  totalRevenue: number;
+  currency?: { code: string; symbol: string | null } | null;
+  newCustomers: number;
+  avgRating: number;
+  totalRatings: number;
+  weeklyPerformance: DailyPoint[];
+}
+
+type StatsState =
+  | { status: "loading" }
+  | { status: "ready"; data: Statistics }
+  | { status: "error" };
+
+/**
+ * Live trading fields from `/restaurants/me`. Read through a local type
+ * because `RestaurantProfile` doesn't declare them all; each is optional so an
+ * older API response simply hides the indicator.
+ */
+interface LiveStatus {
+  isOpen?: boolean;
+  isBusy?: boolean;
+  isAcceptingOrders?: boolean;
+  busyUntil?: string | null;
+}
+
 export default function DashboardPage() {
-  const { t, locale } = useI18n();
-  const [profile, setProfile] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const { t, locale, isRTL } = useI18n();
+  const { restaurant } = useRestaurant();
+  const numberLocale = intlLocale(locale);
 
-  // Statistics State
-  const [period, setPeriod] = useState<string>("month");
-  const [statistics, setStatistics] = useState<any>(null);
-  const [loadingStats, setLoadingStats] = useState(true);
-  // A flag rather than a message: the copy is resolved at render time so the
-  // fetch effect never has to depend on `t`, which is a fresh closure each pass.
-  const [statsFailed, setStatsFailed] = useState(false);
-  
-  // Chart View State (revenue vs orders)
+  const [period, setPeriod] = useState<Period>("month");
+  const [stats, setStats] = useState<StatsState>({ status: "loading" });
+  const [reloadKey, setReloadKey] = useState(0);
   const [chartView, setChartView] = useState<"revenue" | "orders">("revenue");
-  const [hoveredPoint, setHoveredPoint] = useState<number | null>(null);
 
-  // Fetch Profile first
+  // The API answers lowercase (`pending`); the old `"PENDING"` check never matched.
+  const isPending = restaurant?.status === "pending";
+  const restaurantId = restaurant?.id;
+
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const { data } = await apiClient.get("/restaurants/me");
-        setProfile(data);
-      } catch (err) {
-        console.error("Failed to fetch profile", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchProfile();
-  }, []);
-
-  // Fetch Statistics when period or profile changes
-  useEffect(() => {
-    if (!profile || profile.status === "PENDING") {
-      setLoadingStats(false);
-      return;
-    }
-
-    const fetchStats = async () => {
-      setLoadingStats(true);
-      setStatsFailed(false);
-      try {
-        const data = await OrdersService.getStatistics(period);
-        setStatistics(data);
-      } catch (err) {
+    if (!restaurantId || isPending) return;
+    let cancelled = false;
+    OrdersService.getStatistics(period)
+      .then((data: Statistics) => {
+        if (!cancelled) setStats({ status: "ready", data });
+      })
+      .catch((err: unknown) => {
         console.error("Failed to fetch dashboard statistics", err);
-        setStatsFailed(true);
-      } finally {
-        setLoadingStats(false);
-      }
+        if (!cancelled) setStats({ status: "error" });
+      });
+    return () => {
+      cancelled = true;
     };
+  }, [period, restaurantId, isPending, reloadKey]);
 
-    fetchStats();
-  }, [period, profile]);
-
-  // Helpers for Currency Formatting
-  const formatCurrency = (value: number, currencyObj?: { code: string; symbol: string }) => {
-    const code = currencyObj?.code || "USD";
-    const symbol = currencyObj?.symbol || "$";
-    try {
-      return new Intl.NumberFormat(intlLocale(locale), {
-        style: "currency",
-        currency: code,
-        maximumFractionDigits: 0
-      }).format(value);
-    } catch (e) {
-      return `${value.toLocaleString(intlLocale(locale))} ${symbol}`;
-    }
+  const choosePeriod = (next: Period) => {
+    if (next === period) return;
+    setStats({ status: "loading" });
+    setPeriod(next);
   };
 
-  const formatCompactNumber = (value: number, currencyObj?: { code: string; symbol: string }) => {
-    const symbol = currencyObj?.symbol || "$";
-    if (value >= 1_000_000) {
-      return `${(value / 1_000_000).toFixed(1)}M ${symbol}`;
-    }
-    if (value >= 1_000) {
-      return `${(value / 1_000).toFixed(0)}k ${symbol}`;
-    }
-    return `${value} ${symbol}`;
+  const retry = () => {
+    setStats({ status: "loading" });
+    setReloadKey((n) => n + 1);
   };
 
-  // Profile is loading
-  if (loading) {
+  if (isPending) {
     return (
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "400px" }}>
-        <RefreshCw className="animate-spin" size={36} color="var(--accent-primary)" />
+      <div className={`card animate-fade-in ${styles.pending}`}>
+        <AlertCircle size={56} color="var(--warning)" aria-hidden="true" />
+        <h2>{t("dashboard.pending_title")}</h2>
+        <p>{t("dashboard.pending_body")}</p>
       </div>
     );
   }
 
-  // Profile is pending approval
-  if (profile?.status === "PENDING") {
-    return (
-      <div
-        className="glass-panel animate-fade-in"
-        style={{
-          padding: "48px 32px",
-          minHeight: "400px",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-        }}
-      >
-        <AlertCircle size={64} color="var(--warning)" style={{ marginBottom: "20px" }} />
-        <h2 style={{ fontSize: "28px", fontWeight: "700", marginBottom: "12px" }}>
-          {t("dashboard.pending_title")}
-        </h2>
-        <p style={{ color: "var(--text-secondary)", maxWidth: "450px", fontSize: "16px", lineHeight: "1.6" }}>
-          {t("dashboard.pending_body")}
-        </p>
-      </div>
-    );
-  }
+  const data = stats.status === "ready" ? stats.data : null;
+  const loading = stats.status === "loading";
+  const failed = stats.status === "error";
+  const performance = data?.weeklyPerformance ?? [];
 
-  // Calculate coordinates for 7-day weekly performance chart
-  const performanceData = statistics?.weeklyPerformance || [];
-  const currencyObj = statistics?.currency;
-  
-  const maxValue = Math.max(
-    ...performanceData.map((d: any) => (chartView === "revenue" ? d.revenue || 0 : d.orders || 0)),
-    chartView === "revenue" ? 1000 : 10
-  );
+  // Revenue is in the restaurant's currency; a missing one used to read as USD.
+  const formatCurrency = (value: number) =>
+    formatMoney(value, data?.currency?.code ? data.currency : restaurant?.currency, locale);
+  const formatCount = (value: number) => value.toLocaleString(numberLocale);
+  const statValue = (value: string) => (failed ? "—" : value);
 
-  const width = 800;
-  const height = 280;
-  const paddingLeft = 80;
-  const paddingRight = 40;
-  const paddingTop = 40;
-  const paddingBottom = 40;
-  
-  const chartWidth = width - paddingLeft - paddingRight;
-  const chartHeight = height - paddingTop - paddingBottom;
-  
-  const points = performanceData.map((d: any, idx: number) => {
-    const x = paddingLeft + (idx * (chartWidth / Math.max(performanceData.length - 1, 1)));
-    const val = chartView === "revenue" ? d.revenue || 0 : d.orders || 0;
-    const y = height - paddingBottom - ((val / maxValue) * chartHeight);
-    return { x, y, data: d };
-  });
+  // Open / busy / closed at a glance. The shell keeps this profile current
+  // when the owner pauses orders from the sidebar.
+  const live: LiveStatus | null = restaurant;
+  const liveStatus = (() => {
+    if (!live) return null;
+    if (live.isBusy) {
+      const until = live.busyUntil ? new Date(live.busyUntil) : null;
+      const label =
+        until && !Number.isNaN(until.getTime())
+          ? t("home.status_busy_until", {
+              time: until.toLocaleTimeString(numberLocale, { hour: "numeric", minute: "2-digit" }),
+            })
+          : t("home.status_busy");
+      return { className: "badge badge-warning", label };
+    }
+    const accepting = live.isAcceptingOrders ?? live.isOpen;
+    if (accepting === undefined) return null;
+    return accepting
+      ? { className: "badge badge-success", label: t("home.status_open") }
+      : { className: "badge", label: t("home.status_closed") };
+  })();
 
-  let linePath = "";
-  let areaPath = "";
-  if (points.length > 0) {
-    linePath = `M ${points[0].x} ${points[0].y} ` + points.slice(1).map((p: any) => `L ${p.x} ${p.y}`).join(" ");
-    areaPath = `${linePath} L ${points[points.length - 1].x} ${height - paddingBottom} L ${points[0].x} ${height - paddingBottom} Z`;
-  }
-
-  const gridLines = [0, 0.25, 0.5, 0.75, 1];
+  const metricLabel = chartView === "revenue" ? t("dashboard.revenue") : t("dashboard.orders");
 
   return (
-    <div className="animate-fade-in" style={{ display: "flex", flexDirection: "column", gap: "32px" }}>
-      
-      {/* Styles Injection for Custom Animations and Hover Effects */}
-      <style>{`
-        .stat-card {
-          transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .stat-card:hover {
-          transform: translateY(-4px);
-          border-color: var(--accent-primary) !important;
-          box-shadow: var(--shadow-glow);
-        }
-        .period-btn {
-          padding: 6px 16px;
-          border-radius: 8px;
-          border: none;
-          font-size: 13px;
-          font-weight: 600;
-          text-transform: capitalize;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          background: transparent;
-          color: var(--text-secondary);
-        }
-        .period-btn:hover {
-          color: var(--text-primary);
-        }
-        .period-btn.active {
-          background-color: var(--accent-primary);
-          color: white;
-        }
-        .skeleton-pulse {
-          animation: skeletonPulse 1.5s infinite ease-in-out;
-          background-color: var(--border-color);
-        }
-        @keyframes skeletonPulse {
-          0% { opacity: 0.6; }
-          50% { opacity: 1; }
-          100% { opacity: 0.6; }
-        }
-      `}</style>
-
-      {/* Header section with Filter */}
-      <header
-        className="responsive-header"
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          flexWrap: "wrap",
-          gap: "16px"
-        }}
-      >
-        <div>
-          <h1 style={{ fontSize: "32px", fontWeight: "700", marginBottom: "8px" }}>
-            {profile?.name
-              ? t("dashboard.welcome_named", { name: profile.name })
+    <div className={`animate-fade-in ${styles.page}`}>
+      <header className="page-header">
+        <div style={{ minWidth: 0 }}>
+          <h1 className="page-title">
+            {restaurant?.name
+              ? t("dashboard.welcome_named", { name: restaurant.name })
               : t("dashboard.welcome")}
           </h1>
-          <p style={{ color: "var(--text-secondary)" }}>
-            {t("dashboard.subtitle")}
-          </p>
+          <p className="page-subtitle">{t("dashboard.subtitle")}</p>
+          {liveStatus && (
+            <div className={styles.statusRow}>
+              <span className={liveStatus.className} role="status">
+                <span className={styles.statusDot} aria-hidden="true" />
+                {liveStatus.label}
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* Period Filter Selector */}
-        <div style={{
-          display: "flex",
-          backgroundColor: "var(--bg-elevated)",
-          padding: "4px",
-          borderRadius: "10px",
-          border: "1px solid var(--border-color)",
-          alignItems: "center"
-        }}>
+        <div className="segmented" role="group">
           {PERIODS.map((p) => (
             <button
               key={p.value}
-              onClick={() => setPeriod(p.value)}
-              className={`period-btn ${period === p.value ? "active" : ""}`}
+              type="button"
+              aria-pressed={period === p.value}
+              onClick={() => choosePeriod(p.value)}
             >
               {t(p.labelKey)}
             </button>
@@ -265,483 +176,118 @@ export default function DashboardPage() {
         </div>
       </header>
 
-      {/* Statistics Cards Grid */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: "24px",
-        }}
-      >
-        {/* Total Orders Card */}
-        <div
-          className="glass-panel stat-card"
-          style={{
-            padding: "24px",
-            display: "flex",
-            alignItems: "center",
-            gap: "16px",
-            border: "1px solid var(--border-color)"
-          }}
-        >
-          <div
-            style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "12px",
-              background: "rgba(139, 92, 246, 0.1)",
-              color: "#8b5cf6",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <ShoppingBag size={24} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              {t("dashboard.total_orders")}
-            </p>
-            {loadingStats ? (
-              <div className="skeleton-pulse" style={{ height: "28px", width: "80px", borderRadius: "4px" }} />
-            ) : (
-              <h3 style={{ fontSize: "28px", fontWeight: "700", margin: 0 }}>
-                {statistics?.totalOrders ?? 0}
-              </h3>
-            )}
-          </div>
-        </div>
-
-        {/* Total Revenue Card */}
-        <div
-          className="glass-panel stat-card"
-          style={{
-            padding: "24px",
-            display: "flex",
-            alignItems: "center",
-            gap: "16px",
-            border: "1px solid var(--border-color)"
-          }}
-        >
-          <div
-            style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "12px",
-              background: "rgba(16, 185, 129, 0.1)",
-              color: "#10b981",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <DollarSign size={24} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              {t("dashboard.total_revenue")}
-            </p>
-            {loadingStats ? (
-              <div className="skeleton-pulse" style={{ height: "28px", width: "120px", borderRadius: "4px" }} />
-            ) : (
-              <h3 style={{ fontSize: "28px", fontWeight: "700", margin: 0, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
-                {formatCurrency(statistics?.totalRevenue ?? 0, currencyObj)}
-              </h3>
-            )}
-          </div>
-        </div>
-
-        {/* New Customers Card */}
-        <div
-          className="glass-panel stat-card"
-          style={{
-            padding: "24px",
-            display: "flex",
-            alignItems: "center",
-            gap: "16px",
-            border: "1px solid var(--border-color)"
-          }}
-        >
-          <div
-            style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "12px",
-              background: "rgba(99, 102, 241, 0.1)",
-              color: "#6366f1",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Users size={24} />
-          </div>
-          <div style={{ flex: 1 }}>
-            <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              {t("dashboard.new_customers")}
-            </p>
-            {loadingStats ? (
-              <div className="skeleton-pulse" style={{ height: "28px", width: "60px", borderRadius: "4px" }} />
-            ) : (
-              <h3 style={{ fontSize: "28px", fontWeight: "700", margin: 0 }}>
-                {statistics?.newCustomers ?? 0}
-              </h3>
-            )}
-          </div>
-        </div>
-
-        {/* Average Rating Card */}
-        <div
-          className="glass-panel stat-card"
-          style={{
-            padding: "24px",
-            display: "flex",
-            alignItems: "center",
-            gap: "16px",
-            border: "1px solid var(--border-color)"
-          }}
-        >
-          <div
-            style={{
-              width: "48px",
-              height: "48px",
-              borderRadius: "12px",
-              background: "rgba(245, 158, 11, 0.1)",
-              color: "#f59e0b",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-            }}
-          >
-            <Star size={24} fill="#f59e0b" />
-          </div>
-          <div style={{ flex: 1 }}>
-            <p style={{ color: "var(--text-secondary)", fontSize: "14px", fontWeight: "500", marginBottom: "4px" }}>
-              {t("dashboard.rating")}
-            </p>
-            {loadingStats ? (
-              <div className="skeleton-pulse" style={{ height: "28px", width: "90px", borderRadius: "4px" }} />
-            ) : (
-              <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
-                <h3 style={{ fontSize: "28px", fontWeight: "700", margin: 0 }}>
-                  {statistics?.avgRating ? statistics.avgRating.toFixed(1) : "0.0"}
-                </h3>
-                <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-                  {t("dashboard.reviews_count", { count: statistics?.totalRatings ?? 0 })}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
+      <div className={styles.statGrid} aria-busy={loading}>
+        <StatCard
+          icon={ShoppingBag}
+          tone="accent-2"
+          label={t("dashboard.total_orders")}
+          loading={loading}
+          value={statValue(formatCount(data?.totalOrders ?? 0))}
+        />
+        <StatCard
+          icon={DollarSign}
+          tone="success"
+          label={t("dashboard.total_revenue")}
+          loading={loading}
+          value={statValue(formatCurrency(data?.totalRevenue ?? 0))}
+        />
+        <StatCard
+          icon={Users}
+          tone="info"
+          label={t("dashboard.new_customers")}
+          loading={loading}
+          value={statValue(formatCount(data?.newCustomers ?? 0))}
+        />
+        <StatCard
+          icon={Star}
+          filledIcon
+          tone="warning"
+          label={t("dashboard.rating")}
+          loading={loading}
+          value={statValue((Number(data?.avgRating) || 0).toFixed(1))}
+          extra={failed ? undefined : t("dashboard.reviews_count", { count: data?.totalRatings ?? 0 })}
+        />
       </div>
 
-      {/* Main Chart Section */}
-      <div
-        className="glass-panel animate-slide-up"
-        style={{
-          padding: "32px",
-          border: "1px solid var(--border-color)",
-          position: "relative",
-        }}
-      >
-        {/* Chart Header */}
-        <div style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "24px",
-          flexWrap: "wrap",
-          gap: "16px"
-        }}>
+      <section className={`card animate-slide-up ${styles.section}`}>
+        <div className={styles.sectionHeader}>
           <div>
-            <h3 style={{ fontSize: "20px", fontWeight: "700", margin: 0 }}>{t("dashboard.chart_title")}</h3>
-            <p style={{ color: "var(--text-secondary)", fontSize: "14px", margin: "4px 0 0 0" }}>
-              {t("dashboard.chart_subtitle")}
-            </p>
+            <h2 className={styles.sectionTitle}>{t("dashboard.chart_title")}</h2>
+            <p className={styles.sectionSubtitle}>{t("dashboard.chart_subtitle")}</p>
           </div>
-
-          {/* Toggle Display (Revenue / Orders) */}
-          <div style={{
-            display: "flex",
-            backgroundColor: "var(--bg-base)",
-            padding: "4px",
-            borderRadius: "8px",
-            border: "1px solid var(--border-color)"
-          }}>
-            <button
-              onClick={() => { setChartView("revenue"); setHoveredPoint(null); }}
-              style={{
-                padding: "6px 12px",
-                border: "none",
-                borderRadius: "6px",
-                fontSize: "13px",
-                fontWeight: "600",
-                cursor: "pointer",
-                backgroundColor: chartView === "revenue" ? "var(--bg-surface)" : "transparent",
-                color: chartView === "revenue" ? "var(--text-primary)" : "var(--text-secondary)",
-                boxShadow: chartView === "revenue" ? "var(--shadow-sm)" : "none",
-                transition: "all 0.2s ease"
-              }}
-            >
+          <div className="segmented" role="group" aria-label={t("dashboard.chart_title")}>
+            <button type="button" aria-pressed={chartView === "revenue"} onClick={() => setChartView("revenue")}>
               {t("dashboard.revenue")}
             </button>
-            <button
-              onClick={() => { setChartView("orders"); setHoveredPoint(null); }}
-              style={{
-                padding: "6px 12px",
-                border: "none",
-                borderRadius: "6px",
-                fontSize: "13px",
-                fontWeight: "600",
-                cursor: "pointer",
-                backgroundColor: chartView === "orders" ? "var(--bg-surface)" : "transparent",
-                color: chartView === "orders" ? "var(--text-primary)" : "var(--text-secondary)",
-                boxShadow: chartView === "orders" ? "var(--shadow-sm)" : "none",
-                transition: "all 0.2s ease"
-              }}
-            >
+            <button type="button" aria-pressed={chartView === "orders"} onClick={() => setChartView("orders")}>
               {t("dashboard.orders")}
             </button>
           </div>
         </div>
 
-        {/* SVG Render Container */}
-        {loadingStats ? (
-          <div style={{ height: `${height}px`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <RefreshCw className="animate-spin" size={28} color="var(--accent-primary)" />
+        {loading ? (
+          <div className="skeleton" style={{ height: "240px" }} aria-label={t("common.loading")} />
+        ) : failed ? (
+          <div className={styles.chartState} style={{ minHeight: "240px" }} role="alert">
+            <AlertCircle size={32} color="var(--error)" aria-hidden="true" />
+            <span>{t("dashboard.stats_error")}</span>
+            <button type="button" className="btn-outline btn-sm" onClick={retry}>
+              <RefreshCw size={16} /> {t("common.retry")}
+            </button>
           </div>
-        ) : statsFailed ? (
-          <div style={{ height: `${height}px`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px" }}>
-            <AlertCircle size={36} color="var(--error)" />
-            <span style={{ color: "var(--text-secondary)" }}>{t("dashboard.stats_error")}</span>
-          </div>
-        ) : performanceData.length === 0 ? (
-          <div style={{ height: `${height}px`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: "12px" }}>
-            <TrendingUp size={36} color="var(--text-muted)" />
-            <span style={{ color: "var(--text-secondary)", fontSize: "14px" }}>{t("dashboard.no_records")}</span>
+        ) : performance.length === 0 ? (
+          <div className={styles.chartState} style={{ minHeight: "240px" }}>
+            <TrendingUp size={32} color="var(--text-muted)" aria-hidden="true" />
+            <span>{t("dashboard.no_records")}</span>
           </div>
         ) : (
-          <div style={{ position: "relative", width: "100%", overflowX: "auto" }}>
-            
-            {/* Interactive Floating Tooltip */}
-            {hoveredPoint !== null && points[hoveredPoint] && (
-              <div
-                className="glass-panel"
-                style={{
-                  position: "absolute",
-                  left: `${(points[hoveredPoint].x / width) * 100}%`,
-                  top: `${points[hoveredPoint].y - 75}px`,
-                  transform: "translateX(-50%)",
-                  pointerEvents: "none",
-                  zIndex: 20,
-                  padding: "10px 14px",
-                  borderRadius: "8px",
-                  border: "1px solid var(--border-color)",
-                  boxShadow: "var(--shadow-lg)",
-                  fontSize: "12px",
-                  whiteSpace: "nowrap",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "4px",
-                  backgroundColor: "var(--bg-elevated)",
-                  transition: "left 0.1s ease, top 0.1s ease"
-                }}
-              >
-                <div style={{ fontWeight: "700", color: "var(--text-primary)" }}>
-                  {points[hoveredPoint].data.day} • {points[hoveredPoint].data.date}
-                </div>
-                <div style={{ 
-                  color: chartView === "revenue" ? "#10b981" : "#8b5cf6", 
-                  fontWeight: "800",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px"
-                }}>
-                  {chartView === "revenue" ? (
-                    <>
-                      <span>{t("dashboard.revenue")}:</span>
-                      <span>{formatCurrency(points[hoveredPoint].data.revenue, currencyObj)}</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>{t("dashboard.orders")}:</span>
-                      <span>{t("dashboard.orders_value", { count: points[hoveredPoint].data.orders })}</span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <svg
-              viewBox={`0 0 ${width} ${height}`}
-              width="100%"
-              height="100%"
-              style={{ overflow: "visible" }}
-            >
-              <defs>
-                {/* Revenue Emerald Gradient */}
-                <linearGradient id="revenueGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#10b981" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
-                </linearGradient>
-                {/* Orders Violet Gradient */}
-                <linearGradient id="ordersGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-
-              {/* Grid Lines & Labels */}
-              {gridLines.map((g: number, idx: number) => {
-                const y = height - paddingBottom - (g * chartHeight);
-                const labelVal = g * maxValue;
-                return (
-                  <g key={idx}>
-                    {/* Horizontal Line */}
-                    <line
-                      x1={paddingLeft}
-                      y1={y}
-                      x2={width - paddingRight}
-                      y2={y}
-                      stroke="var(--border-light)"
-                      strokeWidth={1}
-                    />
-                    {/* Y-Axis Text Label */}
-                    <text
-                      x={paddingLeft - 15}
-                      y={y + 4}
-                      textAnchor="end"
-                      fill="var(--text-secondary)"
-                      style={{ fontSize: "11px", fontWeight: "500", fontFamily: "inherit" }}
-                    >
-                      {g === 0 ? "0" : (
-                        chartView === "revenue" 
-                          ? formatCompactNumber(labelVal, currencyObj)
-                          : Math.round(labelVal).toString()
-                      )}
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* X-Axis labels */}
-              {points.map((pt: any, idx: number) => (
-                <text
-                  key={idx}
-                  x={pt.x}
-                  y={height - paddingBottom + 20}
-                  textAnchor="middle"
-                  fill="var(--text-secondary)"
-                  style={{ fontSize: "11px", fontWeight: "600", fontFamily: "inherit" }}
-                >
-                  {pt.data.day}
-                </text>
-              ))}
-
-              {/* Vertical dotted guide line on hover */}
-              {hoveredPoint !== null && points[hoveredPoint] && (
-                <line
-                  x1={points[hoveredPoint].x}
-                  y1={paddingTop}
-                  x2={points[hoveredPoint].x}
-                  y2={height - paddingBottom}
-                  stroke="var(--border-color)"
-                  strokeWidth={1.5}
-                  strokeDasharray="4 4"
-                />
-              )}
-
-              {/* Area Under Line */}
-              {points.length > 0 && (
-                <path
-                  d={areaPath}
-                  fill={chartView === "revenue" ? "url(#revenueGradient)" : "url(#ordersGradient)"}
-                  style={{ transition: "all 0.3s ease" }}
-                />
-              )}
-
-              {/* Chart Main Trend Line */}
-              {points.length > 0 && (
-                <path
-                  d={linePath}
-                  fill="none"
-                  stroke={chartView === "revenue" ? "#10b981" : "#8b5cf6"}
-                  strokeWidth={3}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ transition: "all 0.3s ease" }}
-                />
-              )}
-
-              {/* Hover Zones & Interactive Circles */}
-              {points.map((pt: any, idx: number) => (
-                <g key={idx}>
-                  {/* Point Circle marker */}
-                  <circle
-                    cx={pt.x}
-                    cy={pt.y}
-                    r={hoveredPoint === idx ? 7 : 4}
-                    fill={chartView === "revenue" ? "#10b981" : "#8b5cf6"}
-                    stroke="var(--bg-surface)"
-                    strokeWidth={2}
-                    style={{
-                      transition: "r 0.15s ease, cy 0.3s ease, cx 0.3s ease",
-                      cursor: "pointer"
-                    }}
-                  />
-                  {/* Larger Invisible Hover Target Rect */}
-                  <rect
-                    x={pt.x - 30}
-                    y={paddingTop}
-                    width={60}
-                    height={chartHeight + 20}
-                    fill="transparent"
-                    style={{ cursor: "pointer" }}
-                    onMouseEnter={() => setHoveredPoint(idx)}
-                    onMouseLeave={() => setHoveredPoint(null)}
-                  />
-                </g>
-              ))}
-            </svg>
-
-          </div>
+          <PerformanceChart
+            data={performance}
+            metric={chartView}
+            formatValue={(v) =>
+              chartView === "revenue" ? formatCurrency(v) : t("dashboard.orders_value", { count: v })
+            }
+            numberLocale={numberLocale}
+            isRTL={isRTL}
+            label={t("home.chart_aria", { metric: metricLabel })}
+          />
         )}
-      </div>
+      </section>
 
-      {/* List Performance Log Detail Table */}
-      {!loadingStats && !statsFailed && performanceData.length > 0 && (
-        <div className="glass-panel" style={{ padding: "24px", border: "1px solid var(--border-color)" }}>
-          <h3 style={{ fontSize: "18px", fontWeight: "700", marginBottom: "16px" }}>{t("dashboard.breakdown_title")}</h3>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "start", fontSize: "14px" }}>
+      {/* The same week as a table — the chart's accessible equivalent. */}
+      {data && performance.length > 0 && (
+        <section className={`card ${styles.section}`}>
+          <h2 className={styles.sectionTitle} style={{ marginBottom: "12px" }}>
+            {t("dashboard.breakdown_title")}
+          </h2>
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
               <thead>
-                <tr style={{ borderBottom: "1px solid var(--border-color)", color: "var(--text-secondary)" }}>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_date")}</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_day")}</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_orders")}</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600" }}>{t("dashboard.col_revenue")}</th>
-                  <th style={{ padding: "12px 8px", fontWeight: "600", textAlign: "end" }}>{t("dashboard.col_avg")}</th>
+                <tr>
+                  <th scope="col">{t("dashboard.col_date")}</th>
+                  <th scope="col">{t("dashboard.col_day")}</th>
+                  <th scope="col">{t("dashboard.col_orders")}</th>
+                  <th scope="col">{t("dashboard.col_revenue")}</th>
+                  <th scope="col" className={styles.end}>{t("dashboard.col_avg")}</th>
                 </tr>
               </thead>
               <tbody>
-                {performanceData.map((d: any, idx: number) => {
-                  const avgVal = d.orders ? (d.revenue || 0) / d.orders : 0;
+                {performance.map((d) => {
+                  const orders = Number(d.orders) || 0;
+                  const revenue = Number(d.revenue) || 0;
+                  const parsed = parseDay(d.date);
                   return (
-                    <tr 
-                      key={idx} 
-                      style={{ 
-                        borderBottom: idx === performanceData.length - 1 ? "none" : "1px solid var(--border-light)",
-                        color: "var(--text-primary)"
-                      }}
-                    >
-                      <td style={{ padding: "14px 8px", fontWeight: "500" }}>{d.date}</td>
-                      <td style={{ padding: "14px 8px" }}>{d.day}</td>
-                      <td style={{ padding: "14px 8px", fontWeight: "600" }}>{d.orders || 0}</td>
-                      <td style={{ padding: "14px 8px", color: "var(--success)", fontWeight: "600" }}>
-                        {formatCurrency(d.revenue || 0, currencyObj)}
+                    <tr key={d.date}>
+                      <td style={{ fontWeight: 500 }}>
+                        {parsed
+                          ? parsed.toLocaleDateString(numberLocale, { day: "numeric", month: "short" })
+                          : d.date}
                       </td>
-                      <td style={{ padding: "14px 8px", textAlign: "end", color: "var(--text-secondary)" }}>
-                        {formatCurrency(avgVal, currencyObj)}
+                      <td>{weekdayLabel(d, numberLocale)}</td>
+                      <td style={{ fontWeight: 600 }}>{formatCount(orders)}</td>
+                      <td style={{ fontWeight: 600 }}>{formatCurrency(revenue)}</td>
+                      <td className={styles.end} style={{ color: "var(--text-secondary)" }}>
+                        {formatCurrency(orders ? revenue / orders : 0)}
                       </td>
                     </tr>
                   );
@@ -749,9 +295,8 @@ export default function DashboardPage() {
               </tbody>
             </table>
           </div>
-        </div>
+        </section>
       )}
-
     </div>
   );
 }

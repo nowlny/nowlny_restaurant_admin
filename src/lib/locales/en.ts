@@ -1,3 +1,15 @@
+import { shellEn } from "./parts/shell.en";
+import { menuEn } from "./parts/menu.en";
+import { ordersEn } from "./parts/orders.en";
+import { mediaEn } from "./parts/media.en";
+import { settingsEn } from "./parts/settings.en";
+import { stockEn } from "./parts/stock.en";
+import { fleetEn } from "./parts/fleet.en";
+import { integrationsEn } from "./parts/integrations.en";
+import { notificationsEn } from "./parts/notifications.en";
+import { liveordersEn } from "./parts/liveorders.en";
+import { accountEn } from "./parts/account.en";
+
 /**
  * English source strings — the canonical key list.
  *
@@ -20,6 +32,11 @@ export const en = {
   "nav.stories": "Stories",
   "nav.reels": "Reels",
   "nav.settings": "Settings",
+  "nav.fleet": "Drivers",
+  "nav.integrations": "Delivery Companies",
+  "nav.notifications": "Notifications",
+  "nav.account": "My Account",
+  "nav.stock_schedules": "Stock Schedules",
   "nav.partner_dashboard": "Partner Dashboard",
   "nav.default_partner": "Nowlny Partner",
   "nav.open_menu": "Open navigation menu",
@@ -508,6 +525,14 @@ export const en = {
   "reel.save_failed": "Failed to save reel",
   "reel.video_upload_failed": "Failed to upload video. Please try again.",
   "reel.thumbnail_upload_failed": "Failed to upload thumbnail. Please try again.",
+  "reel.video_too_large": "That video is {size} MB, past the {limit} MB limit. Trim or compress it first.",
+  "reel.link_label": "Or import from a link",
+  "reel.link_placeholder": "Paste an Instagram reel link or a video link",
+  "reel.link_import": "Import",
+  "reel.link_importing": "Importing…",
+  "reel.link_hint": "Instagram reels bring their cover and caption along. Links are copied to our hosting, so the video can't disappear later.",
+  "reel.link_invalid": "That doesn't look like a link. It should start with https://",
+  "reel.link_failed": "That link couldn't be imported. Check it's public, or download the video and upload the file.",
 
   // ── QR dine-in menu ──
   "qr.title": "QR Dine-In Menu",
@@ -648,6 +673,19 @@ export const en = {
   "error.reference": "Reference: {digest}",
   "error.retry": "Try again",
   "error.go_home": "Back to dashboard",
+
+  // ── Per-area strings (src/lib/locales/parts) ──
+  ...shellEn,
+  ...menuEn,
+  ...ordersEn,
+  ...mediaEn,
+  ...settingsEn,
+  ...stockEn,
+  ...fleetEn,
+  ...integrationsEn,
+  ...notificationsEn,
+  ...liveordersEn,
+  ...accountEn,
 } as const;
 
 export type MessageKey = keyof typeof en;
